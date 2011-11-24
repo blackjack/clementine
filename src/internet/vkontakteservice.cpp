@@ -16,7 +16,6 @@
 */
 
 #include "vkontakteservice.h"
-#include "vkontakteurlhandler.h"
 #include "internetmodel.h"
 #include "core/closure.h"
 #include "core/logging.h"
@@ -44,7 +43,7 @@ VkontakteService::VkontakteService(InternetModel* parent)
   : InternetService(kServiceName, parent, parent),
     root_(NULL),
     context_menu_(NULL),
-    expire_date_(0),logged_in_(false),
+    logged_in_(false),
     network_(new NetworkAccessManager(this))
 //    streams_(kSettingsGroup, "streams", kStreamsCacheDurationSecs)
 {
@@ -83,10 +82,10 @@ void VkontakteService::ReloadSettings() {
   QSettings s;
   s.beginGroup(kSettingsGroup);
   user_id_ = s.value("user_id").toString();
-  expire_date_ = s.value("expire_date",0).toInt();
+  expire_date_ = s.value("expire_date").toDateTime();
   access_token_ = s.value("access_token").toString();
 
-  logged_in_ = (time(NULL)<expire_date_ && !user_id_.isEmpty() );
+  logged_in_ = (QDateTime::currentDateTimeUtc()<expire_date_ && !user_id_.isEmpty() );
 }
 
 QModelIndex VkontakteService::GetCurrentIndex() {
@@ -148,7 +147,7 @@ void VkontakteService::PopulateTracksForUserFinished(QStandardItem* item,QNetwor
         }
         info = info.nextSiblingElement();
       }
-      QStandardItem* row = new QStandardItem(song.artist()+" - "+song.title());
+      QStandardItem* row = new QStandardItem(song.PrettyTitleWithArtist());
       row->setData(QVariant::fromValue(song), InternetModel::Role_SongMetadata);
       row->setData(InternetModel::PlayBehaviour_SingleItem, InternetModel::Role_PlayBehaviour);
       item->appendRow(row);
@@ -290,15 +289,15 @@ void VkontakteService::ShowConfig() {
 }
 void VkontakteService::Relogin() {
   access_token_.clear();
-  expire_date_ = 0;
+  expire_date_ = QDateTime();
   user_id_.clear();
   logged_in_ = false;
 
   QSettings s;
   s.beginGroup(kSettingsGroup);
-  s.setValue("user_id",QString());
-  s.setValue("expire_date",0);
-  s.setValue("access_token",QString());
+  s.remove("user_id");
+  s.remove("expire_date");
+  s.remove("access_token");
 
   ShowConfig();
 }

@@ -71,7 +71,7 @@ private:
   QMap<QString,QString> albums_;
 
   QString access_token_;
-  time_t expire_date_;
+  QDateTime expire_date_;
   QString user_id_;
   bool logged_in_;
 

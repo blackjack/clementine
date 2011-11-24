@@ -2,33 +2,43 @@
 #define VKONTAKTESETTINGSPAGE_H
 
 #include <QWidget>
-#include <QWebView>
+#include <QTextBrowser>
 #include "ui/settingspage.h"
 
 class Ui_VkontakteSettingsPage;
 class VkontakteService;
+class QNetworkAccessManager;
+class QNetworkReply;
 
 struct VkontakteAuthResult {
  bool success;
  QString access_token;
- time_t expire_date;
+ QDateTime expire_date;
  QString user_id;
  QString error;
 };
 
-class VkontakteAuth: public QWebView {
+class VkontakteAuth: public QObject {
   Q_OBJECT
 public:
-  VkontakteAuth(QString app_id, QWidget* parent = 0);
-  void Login();
+  VkontakteAuth(const QString& app_id, QObject* parent = 0);
+  void Login(const QString& username, const QString& password);
+  void CaptchaEntered(const QString& text);
 signals:
+  void CaptchaRequested(const QPixmap& img);
   void LoginFinished(VkontakteAuthResult result);
 private slots:
-  void slotUrlChanged(QUrl url);
+  void replyGot(QNetworkReply* reply);
+  void captchaGot(QNetworkReply* reply);
 private:
   QString app_id_;
-  bool result_sent_;
-  void closeEvent(QCloseEvent *event);
+  QString username_;
+  QString password_;
+  QUrl post_data_;
+  QUrl post_url_;
+  QNetworkAccessManager* network_;
+  void RequestCaptcha(QUrl url);
+  void ParseForm(const QString& html);
 };
 
 class VkontakteSettingsPage : public SettingsPage {
@@ -44,7 +54,9 @@ private slots:
   void Login();
   void Logout();
   void LoginFinished(VkontakteAuthResult result);
-
+  void CaptchaRequested(const QPixmap& pix);
+  void CaptchaEntered();
+  void FullNameRetreived(const QString& full_name);
 private:
   void UpdateLoginState();
 
@@ -55,9 +67,10 @@ private:
 
   static const char* kSettingGroup;
   bool logged_in_;
+  QString login_error_;
   QString app_id_;
   QString access_token_;
-  time_t expire_date_;
+  QDateTime expire_date_;
   QString user_id_;
 };
 
