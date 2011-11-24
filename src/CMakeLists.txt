@@ -163,6 +163,8 @@ set(SOURCES
   internet/savedradio.cpp
   internet/somafmservice.cpp
   internet/somafmurlhandler.cpp
+  internet/vkontaktesettingspage.cpp
+  internet/vkontakteservice.cpp
 
   library/groupbydialog.cpp
   library/library.cpp
@@ -407,6 +409,8 @@ set(HEADERS
   internet/savedradio.h
   internet/somafmservice.h
   internet/somafmurlhandler.h
+  internet/vkontaktesettingspage.h
+  internet/vkontakteservice.h
 
   library/groupbydialog.h
   library/library.h
@@ -559,6 +563,7 @@ set(UI
   internet/magnatunedownloaddialog.ui
   internet/magnatunesettingspage.ui
   internet/spotifysettingspage.ui
+  internet/vkontaktesettingspage.ui
 
   library/groupbydialog.ui
   library/libraryfilterwidget.ui

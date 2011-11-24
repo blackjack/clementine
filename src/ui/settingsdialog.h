@@ -69,6 +69,7 @@ public:
     Page_Magnatune,
     Page_DigitallyImported,
     Page_BackgroundStreams,
+    Page_Vkontakte,
     Page_Proxy,
     Page_Transcoding,
     Page_Remote,
