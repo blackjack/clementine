@@ -149,16 +149,22 @@ VkontakteSettingsPage::VkontakteSettingsPage(SettingsDialog* dialog)
   ui_->setupUi(this);
   setWindowIcon(QIcon(":/providers/vkontakte.png"));
 
+  connect(service_,SIGNAL(FullNameReceived(QString,QString)),SLOT(FullNameReceived(QString,QString)));
+
   ui_->captcha->hide();
   ui_->captcha_label->hide();
+  ui_->captcha_desc_label->hide();
   ui_->details_label->hide();
 
-  connect(ui_->login, SIGNAL(clicked()), SLOT(Login()));
+  connect(ui_->login, SIGNAL(clicked()), ui_->login_state, SIGNAL(LoginClicked()));
   connect(ui_->login_state, SIGNAL(LoginClicked()), SLOT(Login()));
   connect(ui_->login_state, SIGNAL(LogoutClicked()), SLOT(Logout()));
   connect(ui_->captcha, SIGNAL(returnPressed()),SLOT(CaptchaEntered()));
 
   ui_->login_state->AddCredentialGroup(ui_->login_container);
+  ui_->login_state->AddCredentialField(ui_->login);
+  ui_->login_state->AddCredentialField(ui_->password);
+  ui_->login_state->AddCredentialField(ui_->captcha);
 
   auth_ = new VkontakteAuth(VkontakteService::kApplicationId,0);
   connect(auth_,SIGNAL(CaptchaRequested(QPixmap)),SLOT(CaptchaRequested(QPixmap)));
@@ -170,9 +176,10 @@ VkontakteSettingsPage::~VkontakteSettingsPage() {
 }
 
 void VkontakteSettingsPage::UpdateLoginState() {
+  QString user = full_name_.isEmpty() ? user_id_ : full_name_;
   ui_->login_state->SetLoggedIn(logged_in_ ? LoginStateWidget::LoggedIn
                                            : LoginStateWidget::LoggedOut,
-                                user_id_);
+                                user);
   ui_->login->setEnabled(!logged_in_);
   QString details = logged_in_ ?
         tr("Logged until %1").arg(expire_date_.toLocalTime().toString()):
@@ -183,6 +190,8 @@ void VkontakteSettingsPage::UpdateLoginState() {
 }
 
 void VkontakteSettingsPage::Login() {
+  ui_->details_label->hide();
+  ui_->login_state->SetLoggedIn(LoginStateWidget::LoginInProgress);
   auth_->Login(ui_->username->text(),ui_->password->text());
 }
 
@@ -200,19 +209,20 @@ void VkontakteSettingsPage::LoginFinished(VkontakteAuthResult result) {
     access_token_ = result.access_token;
     expire_date_ = result.expire_date;
     logged_in_ = (QDateTime::currentDateTimeUtc()<expire_date_ && !user_id_.isEmpty() );
+    service_->GetFullNameAsync(user_id_);
   }
   else {
     logged_in_ = false;
     login_error_ = result.error;
   }
   UpdateLoginState();
-  Save();
 }
 
 void VkontakteSettingsPage::Load() {
   QSettings s;
   s.beginGroup(VkontakteService::kSettingsGroup);
   user_id_ = s.value("user_id").toString();
+  full_name_ = s.value("full_name").toString();
   expire_date_ = s.value("expire_date").toDateTime();
   access_token_ = s.value("access_token").toString();
   ui_->username->setText(s.value("username").toString());
@@ -226,6 +236,7 @@ void VkontakteSettingsPage::Save() {
   QSettings s;
   s.beginGroup(VkontakteService::kSettingsGroup);
   s.setValue("user_id",user_id_);
+  s.setValue("full_name",full_name_);
   s.setValue("expire_date",expire_date_);
   s.setValue("access_token",access_token_);
   if (logged_in_) {
@@ -240,18 +251,23 @@ void VkontakteSettingsPage::CaptchaRequested(const QPixmap &pix) {
   ui_->captcha_label->setPixmap(pix);
   ui_->captcha->show();
   ui_->captcha_label->show();
-  disconnect(ui_->login,SIGNAL(clicked()),this,SLOT(Login()));
-  connect(ui_->login,SIGNAL(clicked()),this,SLOT(CaptchaEntered()));
+  ui_->captcha_desc_label->show();
+
+  disconnect(ui_->login_state,SIGNAL(LoginClicked()),this,SLOT(Login()));
+  connect(ui_->login_state,SIGNAL(LoginClicked()),this,SLOT(CaptchaEntered()));
 }
 
 void VkontakteSettingsPage::CaptchaEntered() {
   auth_->CaptchaEntered(ui_->captcha->text());
   ui_->captcha->hide();
+  ui_->captcha_desc_label->hide();
   ui_->captcha_label->hide();
-  disconnect(ui_->login,SIGNAL(clicked()),this,SLOT(CaptchaEntered()));
-  connect(ui_->login,SIGNAL(clicked()),this,SLOT(Login()));
+  disconnect(ui_->login_state,SIGNAL(LoginClicked()),this,SLOT(CaptchaEntered()));
+  connect(ui_->login_state,SIGNAL(LoginClicked()),this,SLOT(Login()));
 }
 
-void VkontakteSettingsPage::FullNameRetreived(const QString &full_name) {
-
+void VkontakteSettingsPage::FullNameReceived(const QString &user_id, const QString &full_name) {
+  full_name_ = full_name;
+  UpdateLoginState();
 }
+

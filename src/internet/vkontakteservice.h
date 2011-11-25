@@ -46,20 +46,27 @@ public:
 
 //  PlaylistItem::Options playlistitem_options() const;
   void ReloadSettings();
+
+  void GetFullNameAsync(const QString& user_id);
+signals:
+  void FullNameReceived(const QString& user_id, const QString& full_name);
 protected:
   QModelIndex GetCurrentIndex();
 
 private slots:
   void Homepage();
   void ShowConfig();
+  void ReloadItems();
   void PopulateTracksForUserFinished(QStandardItem* item, QNetworkReply* reply);
   void PopulateFriendsFinished(QStandardItem* item, QNetworkReply* reply);
-  void GetAlbumsFinished(QString user_id, QStandardItem *item, QNetworkReply *reply);
+  void GetAlbumsFinished(const QString& user_id, QStandardItem *item, QNetworkReply *reply);
+  void GetFullNameFinished(const QString& user_id, QNetworkReply* reply);
 private:
-  void PopulateTracksForUserAsync(QString user_id, QStandardItem* root);
-  void PopulateFriendsAsync(QString user_id, QStandardItem* root);
-  void GetAlbumsAsync(QString user_id, QStandardItem* root);
+  void PopulateTracksForUserAsync(const QString& user_id, QStandardItem* root);
+  void PopulateFriendsAsync(const QString& user_id, QStandardItem* root);
+  void GetAlbumsAsync(const QString& user_id, QStandardItem* root);
   void Relogin();
+  void HandleApiError(int error);
 private:
 //  VkontakteUrlHandler* url_handler_;
 

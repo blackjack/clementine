@@ -56,7 +56,7 @@ private slots:
   void LoginFinished(VkontakteAuthResult result);
   void CaptchaRequested(const QPixmap& pix);
   void CaptchaEntered();
-  void FullNameRetreived(const QString& full_name);
+  void FullNameReceived(const QString& user_id, const QString& full_name);
 private:
   void UpdateLoginState();
 
@@ -72,6 +72,7 @@ private:
   QString access_token_;
   QDateTime expire_date_;
   QString user_id_;
+  QString full_name_;
 };
 
 #endif // VKONTAKTESETTINGSPAGE_H

@@ -72,9 +72,9 @@ void VkontakteService::LazyPopulate(QStandardItem* item) {
     ShowConfig();
     return;
   }
-  if (item->text()==tr("My own tracks"))
+  if (item == my_tracks_)
     GetAlbumsAsync(user_id_,item);
-  else if (item->text()==tr("My friends' tracks"))
+  else if (item == friends_)
     PopulateFriendsAsync(user_id_,item);
 }
 
@@ -97,6 +97,7 @@ void VkontakteService::ShowContextMenu(const QModelIndex& index, const QPoint& g
     context_menu_ = new QMenu;
     context_menu_->addActions(GetPlaylistActions());
     context_menu_->addAction(IconLoader::Load("download"), tr("Open vkontakte.ru in browser"), this, SLOT(Homepage()));
+    context_menu_->addAction(IconLoader::Load("view-refresh"), tr("Refresh catalogue"), this, SLOT(ReloadItems()));
     context_menu_->addAction(IconLoader::Load("configure"), tr("Configure Vkontakte"), this, SLOT(ShowConfig()));
   }
 
@@ -104,7 +105,30 @@ void VkontakteService::ShowContextMenu(const QModelIndex& index, const QPoint& g
   context_menu_->popup(global_pos);
 }
 
-void VkontakteService::PopulateTracksForUserAsync(QString user_id, QStandardItem *root) {
+void VkontakteService::ReloadItems() {
+  LazyPopulate(friends_);
+  if (!logged_in_) {
+    ShowConfig();
+    return;
+  }
+  QStandardItem* item = context_item_;
+  while (item) {
+    if (item==my_tracks_ || item==friends_) {
+      item->setData(false, InternetModel::Role_CanLazyLoad);
+      LazyPopulate(item);
+      return;
+    } else if (item==root_) {
+      if (!friends_->data(InternetModel::Role_CanLazyLoad).toBool())
+        LazyPopulate(friends_);
+      if (!my_tracks_->data(InternetModel::Role_CanLazyLoad).toBool())
+        LazyPopulate(my_tracks_);
+      return;
+    }
+    item = item->parent();
+  }
+}
+
+void VkontakteService::PopulateTracksForUserAsync(const QString& user_id, QStandardItem *root) {
   QUrl request("https://api.vkontakte.ru/method/audio.get.xml");
   request.addQueryItem("uid",user_id);
   request.addQueryItem("access_token",access_token_);
@@ -128,7 +152,7 @@ void VkontakteService::PopulateTracksForUserFinished(QStandardItem* item,QNetwor
     item->removeRows(0, item->rowCount());
 
   QDomDocument doc;
-  doc.setContent(reply->readAll());
+  doc.setContent(reply);
   QDomElement root = doc.documentElement();
   if (root.tagName()=="response") {
     QDomNodeList tracks = root.elementsByTagName("audio");
@@ -167,7 +191,7 @@ void VkontakteService::PopulateTracksForUserFinished(QStandardItem* item,QNetwor
   }
 }
 
-void  VkontakteService::PopulateFriendsAsync(QString user_id, QStandardItem* root) {
+void  VkontakteService::PopulateFriendsAsync(const QString& user_id, QStandardItem* root) {
   QUrl request("https://api.vkontakte.ru/method/friends.get.xml");
   request.addQueryItem("uid",user_id);
   request.addQueryItem("fields","uid,first_name,last_name");
@@ -191,7 +215,7 @@ void VkontakteService::PopulateFriendsFinished(QStandardItem* item, QNetworkRepl
     item->removeRows(0, item->rowCount());
 
   QDomDocument doc;
-  doc.setContent(reply->readAll());
+  doc.setContent(reply);
   QDomElement root = doc.documentElement();
   if (root.tagName()=="response") {
     QDomNodeList tracks = root.elementsByTagName("user");
@@ -215,19 +239,11 @@ void VkontakteService::PopulateFriendsFinished(QStandardItem* item, QNetworkRepl
 
   } else if (root.tagName()=="error") {
     QDomElement error_code = root.elementsByTagName("error_code").at(0).toElement();
-    int ec = error_code.text().toInt();
-    switch (ec) {
-    case 4:
-    case 5:
-      Relogin();
-      break;
-    default:
-      break;
-    }
+    HandleApiError(error_code.text().toInt());
   }
 }
 
-void VkontakteService::GetAlbumsAsync(QString user_id, QStandardItem* root) {
+void VkontakteService::GetAlbumsAsync(const QString& user_id, QStandardItem* root) {
   QUrl request("https://api.vkontakte.ru/method/audio.getAlbums.xml");
   request.addQueryItem("uid",user_id);
   request.addQueryItem("count","100");
@@ -239,7 +255,7 @@ void VkontakteService::GetAlbumsAsync(QString user_id, QStandardItem* root) {
              user_id, root, reply);
 }
 
-void VkontakteService::GetAlbumsFinished(QString user_id, QStandardItem *item, QNetworkReply *reply) {
+void VkontakteService::GetAlbumsFinished(const QString& user_id, QStandardItem *item, QNetworkReply *reply) {
   reply->deleteLater();
 
   if (reply->error() != QNetworkReply::NoError) {
@@ -248,7 +264,7 @@ void VkontakteService::GetAlbumsFinished(QString user_id, QStandardItem *item, Q
   }
 
   QDomDocument doc;
-  doc.setContent(reply->readAll());
+  doc.setContent(reply);
   QDomElement root = doc.documentElement();
   if (root.tagName()=="response") {
     QDomNodeList tracks = root.elementsByTagName("album");
@@ -264,19 +280,62 @@ void VkontakteService::GetAlbumsFinished(QString user_id, QStandardItem *item, Q
         info = info.nextSiblingElement();
       }
       albums_.insert(album_id,title);
-      PopulateTracksForUserAsync(user_id,item);
     }
+    PopulateTracksForUserAsync(user_id,item);
   } else if (root.tagName()=="error") {
     QDomElement error_code = root.elementsByTagName("error_code").at(0).toElement();
-    int ec = error_code.text().toInt();
-    switch (ec) {
-    case 4:
-    case 5:
-      Relogin();
-      break;
-    default:
-      break;
+    HandleApiError(error_code.text().toInt());
+  }
+}
+
+void VkontakteService::GetFullNameAsync(const QString &user_id) {
+  QUrl request("https://api.vkontakte.ru/method/getProfiles.xml");
+  request.addQueryItem("uids",user_id);
+  request.addQueryItem("fields","first_name,last_name");
+  request.addQueryItem("access_token",access_token_);
+  QNetworkReply* reply = network_->get(QNetworkRequest(request));
+
+  NewClosure(reply, SIGNAL(finished()),
+             this, SLOT(GetFullNameFinished(QString,QNetworkReply*)),
+             user_id, reply);
+}
+
+void VkontakteService::GetFullNameFinished(const QString &user_id, QNetworkReply *reply) {
+  reply->deleteLater();
+  if (reply->error() != QNetworkReply::NoError) {
+    qLog(Error) << reply->errorString();
+    return;
+  }
+
+  QDomDocument doc;
+  doc.setContent(reply);
+  QDomElement root = doc.documentElement();
+  if (root.tagName()=="response") {
+    QDomElement user = root.elementsByTagName("user").at(0).toElement().firstChildElement();
+    QString first_name,last_name;
+    while (!user.isNull()) {
+      if (user.tagName() == "first_name") {
+        first_name = user.text();
+      } else if (user.tagName() == "last_name") {
+          last_name = user.text();
+      }
+      user = user.nextSiblingElement();
     }
+    if (first_name.isEmpty() || last_name.isEmpty())
+      emit FullNameReceived(user_id,first_name+last_name);
+    else emit FullNameReceived(user_id,first_name+" "+last_name);
+  } else if (root.tagName()=="error") {
+    QDomElement error_code = root.elementsByTagName("error_code").at(0).toElement();
+    HandleApiError(error_code.text().toInt());
+  }
+}
+
+void VkontakteService::HandleApiError(int error) {
+  switch (error) {
+  case 4:
+  case 5:
+    Relogin();
+    break;
   }
 }
 
