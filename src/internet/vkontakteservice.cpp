@@ -58,6 +58,7 @@ VkontakteService::~VkontakteService() {
 
 QStandardItem* VkontakteService::CreateRootItem() {
   root_ = new QStandardItem(QIcon(":/providers/vkontakte.png"), kServiceName);
+  root_->setData(false, InternetModel::Role_CanLazyLoad);
   my_tracks_ = new QStandardItem(QIcon(":last.fm/personal_radio.png"),tr("My own tracks"));
   my_tracks_->setData(true, InternetModel::Role_CanLazyLoad);
   friends_ = new QStandardItem(QIcon(":last.fm/neighbour_radio.png"),tr("My friends' tracks"));
@@ -106,7 +107,6 @@ void VkontakteService::ShowContextMenu(const QModelIndex& index, const QPoint& g
 }
 
 void VkontakteService::ReloadItems() {
-  LazyPopulate(friends_);
   if (!logged_in_) {
     ShowConfig();
     return;
@@ -179,15 +179,7 @@ void VkontakteService::PopulateTracksForUserFinished(QStandardItem* item,QNetwor
 
   } else if (root.tagName()=="error") {
     QDomElement error_code = root.elementsByTagName("error_code").at(0).toElement();
-    int ec = error_code.text().toInt();
-    switch (ec) {
-    case 4:
-    case 5:
-      Relogin();
-      break;
-    default:
-      break;
-    }
+    HandleApiError(error_code.text().toInt());
   }
 }
 
