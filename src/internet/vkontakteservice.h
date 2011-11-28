@@ -25,7 +25,7 @@
 
 class QNetworkAccessManager;
 class QMenu;
-
+class Playlist;
 
 class VkontakteService : public InternetService {
   Q_OBJECT
@@ -38,15 +38,20 @@ public:
   static const char* kSettingsGroup;
   static const char* kHomepage;
   static const char* kApplicationId;
-  static const int kStreamsCacheDurationSecs;
+  static const int kMaxAlbumsPerRequest;
+  static const int kMaxSearchResults;
+  static const int kSearchDelayMsec;
+
 
   QStandardItem* CreateRootItem();
   void LazyPopulate(QStandardItem* item);
   void ShowContextMenu(const QModelIndex& index, const QPoint& global_pos);
+  void ItemDoubleClicked(QStandardItem* item);
 
 //  PlaylistItem::Options playlistitem_options() const;
   void ReloadSettings();
 
+  void Search(const QString& text, Playlist* playlist, bool now = false);
   void GetFullNameAsync(const QString& user_id);
 signals:
   void FullNameReceived(const QString& user_id, const QString& full_name);
@@ -61,10 +66,16 @@ private slots:
   void PopulateFriendsFinished(QStandardItem* item, QNetworkReply* reply);
   void GetAlbumsFinished(const QString& user_id, QStandardItem *item, QNetworkReply *reply);
   void GetFullNameFinished(const QString& user_id, QNetworkReply* reply);
+
+  void DoSearch();
+  void SearchFinished(QNetworkReply* reply);
+
 private:
   void PopulateTracksForUserAsync(const QString& user_id, QStandardItem* root);
   void PopulateFriendsAsync(const QString& user_id, QStandardItem* root);
   void GetAlbumsAsync(const QString& user_id, QStandardItem* root);
+  void SearchAsync(const QString& text, int offset = 0);
+
   void Relogin();
   void HandleApiError(int error);
 private:
@@ -73,6 +84,7 @@ private:
   QStandardItem* root_;
   QStandardItem* my_tracks_;
   QStandardItem* friends_;
+  QStandardItem* search_;
   QMenu* context_menu_;
   QStandardItem* context_item_;
   QMap<QString,QString> albums_;
@@ -82,8 +94,11 @@ private:
   QString user_id_;
   bool logged_in_;
 
-  QNetworkAccessManager* network_;
+  QTimer* search_delay_;
+  QString pending_search_;
+  Playlist* pending_search_playlist_;
 
+  QNetworkAccessManager* network_;
 };
 
 #endif // VKONTAKTESERVICE_H

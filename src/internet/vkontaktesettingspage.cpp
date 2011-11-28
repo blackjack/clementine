@@ -10,6 +10,7 @@
 #include <QNetworkAccessManager>
 #include <QNetworkRequest>
 #include <QNetworkReply>
+#include <QNetworkCookieJar>
 #include <QXmlStreamReader>
 #include <QImageReader>
 
@@ -23,6 +24,8 @@ VkontakteAuth::VkontakteAuth(const QString &app_id, QObject *parent)
 void VkontakteAuth::Login(const QString &username, const QString &password) {
   username_ = username;
   password_ = password;
+  delete network_->cookieJar(); //clear cookies before auth
+  network_->setCookieJar(new QNetworkCookieJar(network_));
   QUrl url("http://api.vkontakte.ru/oauth/authorize");
   url.addQueryItem("client_id",app_id_);
   url.addQueryItem("scope","audio,friends");
@@ -198,8 +201,10 @@ void VkontakteSettingsPage::Login() {
 void VkontakteSettingsPage::Logout() {
   logged_in_ = false;
   user_id_.clear();
+  full_name_.clear();
   access_token_.clear();
   expire_date_ = QDateTime();
+  Save();
   UpdateLoginState();
 }
 
@@ -222,13 +227,14 @@ void VkontakteSettingsPage::Load() {
   QSettings s;
   s.beginGroup(VkontakteService::kSettingsGroup);
   user_id_ = s.value("user_id").toString();
-  full_name_ = s.value("full_name").toString();
   expire_date_ = s.value("expire_date").toDateTime();
   access_token_ = s.value("access_token").toString();
   ui_->username->setText(s.value("username").toString());
   ui_->password->setText(s.value("password").toString());
 
   logged_in_ = (QDateTime::currentDateTimeUtc()<expire_date_ && !user_id_.isEmpty() );
+
+  service_->GetFullNameAsync(user_id_);
   UpdateLoginState();
 }
 
@@ -236,7 +242,6 @@ void VkontakteSettingsPage::Save() {
   QSettings s;
   s.beginGroup(VkontakteService::kSettingsGroup);
   s.setValue("user_id",user_id_);
-  s.setValue("full_name",full_name_);
   s.setValue("expire_date",expire_date_);
   s.setValue("access_token",access_token_);
   if (logged_in_) {

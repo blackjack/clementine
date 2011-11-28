@@ -165,6 +165,7 @@ set(SOURCES
   internet/somafmurlhandler.cpp
   internet/vkontaktesettingspage.cpp
   internet/vkontakteservice.cpp
+  internet/vkontaktesearchplaylisttype.cpp
 
   library/groupbydialog.cpp
   library/library.cpp
@@ -411,6 +412,7 @@ set(HEADERS
   internet/somafmurlhandler.h
   internet/vkontaktesettingspage.h
   internet/vkontakteservice.h
+  internet/vkontaktesearchplaylisttype.h
 
   library/groupbydialog.h
   library/library.h
