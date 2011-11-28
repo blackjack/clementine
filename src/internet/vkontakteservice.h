@@ -19,13 +19,12 @@
 #define VKONTAKTESERVICE_H
 
 #include "internetservice.h"
-#include "core/cachedlist.h"
-
-//class VkontakteUrlHandler;
 
 class QNetworkAccessManager;
 class QMenu;
 class Playlist;
+class QDomElement;
+class Song;
 
 class VkontakteService : public InternetService {
   Q_OBJECT
@@ -47,6 +46,7 @@ public:
   void LazyPopulate(QStandardItem* item);
   void ShowContextMenu(const QModelIndex& index, const QPoint& global_pos);
   void ItemDoubleClicked(QStandardItem* item);
+  QList<QAction*> playlistitem_actions(const Song& song);
 
 //  PlaylistItem::Options playlistitem_options() const;
   void ReloadSettings();
@@ -55,6 +55,9 @@ public:
   void GetFullNameAsync(const QString& user_id);
 signals:
   void FullNameReceived(const QString& user_id, const QString& full_name);
+public slots:
+  void AddToMyTracks();
+  void RemoveFromMyTracks();
 protected:
   QModelIndex GetCurrentIndex();
 
@@ -66,7 +69,7 @@ private slots:
   void PopulateFriendsFinished(QStandardItem* item, QNetworkReply* reply);
   void GetAlbumsFinished(const QString& user_id, QStandardItem *item, QNetworkReply *reply);
   void GetFullNameFinished(const QString& user_id, QNetworkReply* reply);
-
+  void MyTracksChanged(QNetworkReply* reply);
   void DoSearch();
   void SearchFinished(QNetworkReply* reply);
 
@@ -78,6 +81,7 @@ private:
 
   void Relogin();
   void HandleApiError(int error);
+  Song ParseSong(QDomElement info);
 private:
 //  VkontakteUrlHandler* url_handler_;
 
@@ -86,7 +90,13 @@ private:
   QStandardItem* friends_;
   QStandardItem* search_;
   QMenu* context_menu_;
+  QAction* add_to_my_tracks_;
+  QAction* remove_from_my_tracks_;
+
+  QList<QAction*> playlistitem_actions_;
   QStandardItem* context_item_;
+  Song context_song_;
+
   QMap<QString,QString> albums_;
 
   QString access_token_;

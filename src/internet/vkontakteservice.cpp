@@ -59,6 +59,11 @@ VkontakteService::VkontakteService(InternetModel* parent)
   search_delay_->setInterval(kSearchDelayMsec);
   search_delay_->setSingleShot(true);
   connect(search_delay_, SIGNAL(timeout()), SLOT(DoSearch()));
+
+  add_to_my_tracks_ = new QAction(IconLoader::Load("list-add"), tr("Add to my tracks"), this);
+  connect(add_to_my_tracks_,SIGNAL(triggered()),SLOT(AddToMyTracks()));
+  remove_from_my_tracks_ = new QAction(IconLoader::Load("list-remove"), tr("Remove from tracks"), this);
+  connect(remove_from_my_tracks_,SIGNAL(triggered()),SLOT(RemoveFromMyTracks()));
 }
 
 VkontakteService::~VkontakteService() {
@@ -86,9 +91,11 @@ QStandardItem* VkontakteService::CreateRootItem() {
 
 void VkontakteService::LazyPopulate(QStandardItem* item) {
   if (!logged_in_) {
+    item->setData(true, InternetModel::Role_CanLazyLoad);
     ShowConfig();
     return;
   }
+  item->appendRow(new QStandardItem(tr("Loading...")));
   if (item == my_tracks_)
     GetAlbumsAsync(user_id_,item);
   else if (item == friends_)
@@ -116,10 +123,43 @@ void VkontakteService::ShowContextMenu(const QModelIndex& index, const QPoint& g
     context_menu_->addAction(IconLoader::Load("download"), tr("Open vkontakte.ru in browser"), this, SLOT(Homepage()));
     context_menu_->addAction(IconLoader::Load("view-refresh"), tr("Refresh catalogue"), this, SLOT(ReloadItems()));
     context_menu_->addAction(IconLoader::Load("configure"), tr("Configure Vkontakte"), this, SLOT(ShowConfig()));
+    context_menu_->insertAction(0,add_to_my_tracks_);
+    context_menu_->insertAction(0,remove_from_my_tracks_);
   }
 
+
   context_item_ = model()->itemFromIndex(index);
+  QVariant song_var = context_item_->data(InternetModel::Role_SongMetadata);
+  bool can_add = false, can_delete = false;
+  if (song_var.isValid()) {
+    context_song_ = song_var.value<Song>();
+    if (context_song_.id()>0 && context_song_.owner_id()>0) {
+      if (QString::number(context_song_.owner_id())==user_id_)
+        can_delete = true;
+      else
+        can_add = true;
+    }
+  }
+  add_to_my_tracks_->setVisible(can_add);
+  remove_from_my_tracks_->setVisible(can_delete);
+
   context_menu_->popup(global_pos);
+}
+
+
+QList<QAction*> VkontakteService::playlistitem_actions(const Song& song) {
+  // Clear previous actions
+  playlistitem_actions_.clear();
+
+  if (song.id()>0 && song.owner_id()>0) {
+    context_song_ = song;
+    if (QString::number(context_song_.owner_id())==user_id_)
+      playlistitem_actions_.append(remove_from_my_tracks_);
+    else
+      playlistitem_actions_.append(add_to_my_tracks_);
+  }
+
+  return playlistitem_actions_;
 }
 
 void VkontakteService::ReloadItems() {
@@ -173,20 +213,7 @@ void VkontakteService::PopulateTracksForUserFinished(QStandardItem* item,QNetwor
   if (root.tagName()=="response") {
     QDomNodeList tracks = root.elementsByTagName("audio");
     for(int i = 0; i< tracks.size(); ++i) {
-      QDomElement info = tracks.at(i).firstChildElement();
-      Song song;
-      while (!info.isNull()) {
-        if (info.tagName() == "artist") {
-          song.set_artist(info.text());
-        } else if (info.tagName() == "title") {
-          song.set_title(info.text());
-        } else if (info.tagName() == "url") {
-          song.set_url(QUrl(info.text()));
-        } else if (info.tagName() == "album") {
-          song.set_album(albums_[info.text()]);
-        }
-        info = info.nextSiblingElement();
-      }
+      Song song = ParseSong(tracks.at(i).firstChildElement());
 
       QStandardItem* row = new QStandardItem(song.PrettyTitleWithArtist());
       row->setData(QVariant::fromValue(song), InternetModel::Role_SongMetadata);
@@ -416,30 +443,20 @@ void VkontakteService::SearchFinished(QNetworkReply *reply) {
     return;
   }
 
-  QString s = QString::fromUtf8(reply->readAll()).trimmed();
+  QByteArray arr = reply->readAll();
+  //sometimes it receives whitespaces in the beginning of the answer and QDomDocument reports an error
+  //so I use trimmed()
   QDomDocument doc;
-  doc.setContent(s);
+  doc.setContent(arr.trimmed(),false);
   QDomElement root = doc.documentElement();
   if (root.tagName()=="response") {
     QDomNodeList tracks = root.elementsByTagName("audio");
     SongList songs;
+
     for(int i = 0; i< tracks.size(); ++i) {
-      QDomElement info = tracks.at(i).firstChildElement();
-      Song song;
-      while (!info.isNull()) {
-        if (info.tagName() == "artist") {
-          song.set_artist(info.text());
-        } else if (info.tagName() == "title") {
-          song.set_title(info.text());
-        } else if (info.tagName() == "url") {
-          song.set_url(QUrl(info.text()));
-        } else if (info.tagName() == "album") {
-          song.set_album(albums_[info.text()]);
-        }
-        info = info.nextSiblingElement();
-      }
-      songs << song;
+      songs << ParseSong(tracks.at(i).firstChildElement());
     }
+
     pending_search_playlist_->Clear();
     pending_search_playlist_->InsertInternetItems(this, songs);
   } else if (root.tagName()=="error") {
@@ -454,3 +471,75 @@ void VkontakteService::ItemDoubleClicked(QStandardItem* item) {
     model()->player()->playlists()->New(tr("Search Vkontakte"), SongList(),
                                         VkontakteSearchPlaylistType::kName);
 }
+
+
+Song VkontakteService::ParseSong(QDomElement info) {
+  Song song;
+  while (!info.isNull()) {
+    if (info.tagName() == "artist") {
+      song.set_artist(info.text());
+    } else if (info.tagName() == "title") {
+        song.set_title(info.text());
+    } else if (info.tagName() == "url") {
+      song.set_url(QUrl(info.text()));
+    } else if (info.tagName() == "album") {
+      song.set_album(albums_[info.text()]);
+    } else if (info.tagName() == "aid") {
+      song.set_id(info.text().toInt());
+    } else if (info.tagName() == "owner_id") {
+      song.set_owner_id(info.text().toInt());
+    } else if (info.tagName() == "duration") {
+      song.set_length_nanosec(info.text().toLongLong()*1e9);
+    }
+    info = info.nextSiblingElement();
+  }
+  return song;
+}
+
+void VkontakteService::AddToMyTracks() {
+  QUrl request("https://api.vkontakte.ru/method/audio.add.xml");
+  request.addQueryItem("aid",QString::number(context_song_.id()));
+  request.addQueryItem("oid",QString::number(context_song_.owner_id()));
+  request.addQueryItem("access_token",access_token_);
+
+  QNetworkReply* reply = network_->get(QNetworkRequest(request));
+
+  NewClosure(reply, SIGNAL(finished()),
+             this, SLOT(MyTracksChanged(QNetworkReply*)),
+             reply);
+}
+
+
+void VkontakteService::RemoveFromMyTracks() {
+  QUrl request("https://api.vkontakte.ru/method/audio.delete.xml");
+  request.addQueryItem("aid",QString::number(context_song_.id()));
+  request.addQueryItem("oid",QString::number(context_song_.owner_id()));
+  request.addQueryItem("access_token",access_token_);
+
+  QNetworkReply* reply = network_->get(QNetworkRequest(request));
+
+  NewClosure(reply, SIGNAL(finished()),
+             this, SLOT(MyTracksChanged(QNetworkReply*)),
+             reply);
+}
+
+void VkontakteService::MyTracksChanged(QNetworkReply *reply) {
+  reply->deleteLater();
+  if (reply->error() != QNetworkReply::NoError) {
+    qLog(Error) << reply->errorString();
+    return;
+  }
+
+  QByteArray arr = reply->readAll();
+  QDomDocument doc;
+  doc.setContent(arr.trimmed(),false);
+  QDomElement root = doc.documentElement();
+  if (root.tagName()=="response") {
+    if (!my_tracks_->data(InternetModel::Role_CanLazyLoad).toBool())
+      LazyPopulate(my_tracks_);
+  } else if (root.tagName()=="error") {
+    QDomElement error_code = root.elementsByTagName("error_code").at(0).toElement();
+    HandleApiError(error_code.text().toInt());
+  }
+}
+
