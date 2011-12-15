@@ -16,6 +16,7 @@
 */
 
 #include "spotifyserver.h"
+#include "core/closure.h"
 #include "core/logging.h"
 
 #include "spotifyblob/common/spotifymessages.pb.h"
@@ -23,6 +24,7 @@
 
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QTimer>
 
 SpotifyServer::SpotifyServer(QObject* parent)
   : QObject(parent),
@@ -75,12 +77,27 @@ void SpotifyServer::SendMessage(const spotify_pb::SpotifyMessage& message) {
   }
 }
 
-void SpotifyServer::Login(const QString& username, const QString& password) {
+void SpotifyServer::Login(const QString& username, const QString& password,
+                          spotify_pb::Bitrate bitrate, bool volume_normalisation) {
   spotify_pb::SpotifyMessage message;
 
   spotify_pb::LoginRequest* request = message.mutable_login_request();
   request->set_username(DataCommaSizeFromQString(username));
-  request->set_password(DataCommaSizeFromQString(password));
+  if (!password.isEmpty()) {
+    request->set_password(DataCommaSizeFromQString(password));
+  }
+  request->mutable_playback_settings()->set_bitrate(bitrate);
+  request->mutable_playback_settings()->set_volume_normalisation(volume_normalisation);
+
+  SendMessage(message);
+}
+
+void SpotifyServer::SetPlaybackSettings(spotify_pb::Bitrate bitrate, bool volume_normalisation) {
+  spotify_pb::SpotifyMessage message;
+
+  spotify_pb::PlaybackSettings* request = message.mutable_set_playback_settings_request();
+  request->set_bitrate(bitrate);
+  request->set_volume_normalisation(volume_normalisation);
 
   SendMessage(message);
 }
@@ -188,6 +205,16 @@ void SpotifyServer::LoadStarred() {
 void SpotifyServer::LoadUserPlaylist(int index) {
   Q_ASSERT(index >= 0);
   LoadPlaylist(spotify_pb::UserPlaylist, index);
+}
+
+void SpotifyServer::StartPlaybackLater(const QString& uri, quint16 port) {
+  QTimer* timer = new QTimer(this);
+  connect(timer, SIGNAL(timeout()), timer, SLOT(deleteLater()));
+
+  timer->start(100); // lol
+  NewClosure(timer, SIGNAL(timeout()),
+             this, SLOT(StartPlayback(QString,quint16)),
+             uri, port);
 }
 
 void SpotifyServer::StartPlayback(const QString& uri, quint16 port) {

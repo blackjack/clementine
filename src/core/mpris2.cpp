@@ -24,6 +24,7 @@
 #include "core/mpris2_root.h"
 #include "core/mpris2_tracklist.h"
 #include "core/player.h"
+#include "core/timeconstants.h"
 #include "covers/artloader.h"
 #include "engines/enginebase.h"
 #include "playlist/playlist.h"
@@ -151,9 +152,7 @@ bool Mpris2::HasTrackList() const {
 }
 
 QString Mpris2::Identity() const {
-  return QString("%1 %2").arg(
-      QCoreApplication::applicationName(),
-      QCoreApplication::applicationVersion());
+  return QCoreApplication::applicationName();
 }
 
 QString Mpris2::DesktopEntryAbsolutePath() const {

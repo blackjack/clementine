@@ -22,14 +22,20 @@
 #include <QCoreApplication>
 #include <QStringList>
 
+#include <gst/gst.h>
+
 #include "spotifyclient.h"
 #include "core/logging.h"
 
 int main(int argc, char** argv) {
   QCoreApplication a(argc, argv);
   QCoreApplication::setApplicationName("Clementine");
+  QCoreApplication::setOrganizationName("Clementine");
+  QCoreApplication::setOrganizationDomain("clementine-player.org");
 
   logging::Init();
+
+  gst_init(NULL, NULL);
 
   const QStringList arguments(a.arguments());
 

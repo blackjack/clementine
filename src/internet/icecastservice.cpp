@@ -61,8 +61,7 @@ IcecastService::IcecastService(InternetModel* parent)
   model_ = new IcecastModel(backend_, this);
   filter_->SetIcecastModel(model_);
 
-  model()->global_search()->AddProvider(
-        new IcecastSearchProvider(backend_, this), false);
+  model()->global_search()->AddProvider(new IcecastSearchProvider(backend_, this));
 }
 
 IcecastService::~IcecastService() {
@@ -297,7 +296,7 @@ void IcecastService::EnsureMenuCreated() {
   context_menu_ = new QMenu;
 
   context_menu_->addActions(GetPlaylistActions());
-  context_menu_->addAction(IconLoader::Load("download"), tr("Open dir.xiph.org in browser"), this, SLOT(Homepage()));
+  context_menu_->addAction(IconLoader::Load("download"), tr("Open %1 in browser").arg("dir.xiph.org"), this, SLOT(Homepage()));
   context_menu_->addAction(IconLoader::Load("view-refresh"), tr("Refresh station list"), this, SLOT(LoadDirectory()));
 
   context_menu_->addSeparator();

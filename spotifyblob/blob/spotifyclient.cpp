@@ -19,6 +19,7 @@
 // compatible.
 
 
+#include "mediapipeline.h"
 #include "spotifyclient.h"
 #include "spotifykey.h"
 #include "spotifymessagehandler.h"
@@ -40,12 +41,9 @@ SpotifyClient::SpotifyClient(QObject* parent)
   : QObject(parent),
     api_key_(QByteArray::fromBase64(kSpotifyApiKey)),
     protocol_socket_(new QTcpSocket(this)),
-    media_socket_(NULL),
     handler_(new SpotifyMessageHandler(protocol_socket_, this)),
     session_(NULL),
-    events_timer_(new QTimer(this)),
-    media_length_msec_(-1),
-    byte_rate_(0) {
+    events_timer_(new QTimer(this)) {
   memset(&spotify_callbacks_, 0, sizeof(spotify_callbacks_));
   memset(&spotify_config_, 0, sizeof(spotify_config_));
   memset(&playlistcontainer_callbacks_, 0, sizeof(playlistcontainer_callbacks_));
@@ -60,6 +58,11 @@ SpotifyClient::SpotifyClient(QObject* parent)
   spotify_callbacks_.end_of_track = &EndOfTrackCallback;
   spotify_callbacks_.streaming_error = &StreamingErrorCallback;
   spotify_callbacks_.offline_status_updated = &OfflineStatusUpdatedCallback;
+  spotify_callbacks_.connection_error = &ConnectionErrorCallback;
+  spotify_callbacks_.message_to_user = &UserMessageCallback;
+  spotify_callbacks_.start_playback = &StartPlaybackCallback;
+  spotify_callbacks_.stop_playback = &StopPlaybackCallback;
+
 
   playlistcontainer_callbacks_.container_loaded = &PlaylistContainerLoadedCallback;
   playlistcontainer_callbacks_.playlist_added = &PlaylistAddedCallback;
@@ -72,10 +75,12 @@ SpotifyClient::SpotifyClient(QObject* parent)
 
   QString cache = utilities::GetCacheDirectory();
   qLog(Debug) << "Using:" << cache << "for Spotify cache";
+  QString settings_dir = utilities::GetSettingsDirectory();
+  qLog(Debug) << "Using:" << settings_dir << "for Spotify settings";
 
   spotify_config_.api_version = SPOTIFY_API_VERSION;  // From libspotify/api.h
-  spotify_config_.cache_location = strdup(cache.toLocal8Bit().constData());
-  spotify_config_.settings_location = strdup(QDir::tempPath().toLocal8Bit().constData());
+  spotify_config_.cache_location = strdup(cache.toUtf8().constData());
+  spotify_config_.settings_location = strdup(settings_dir.toUtf8().constData());
   spotify_config_.application_key = api_key_.constData();
   spotify_config_.application_key_size = api_key_.size();
   spotify_config_.callbacks = &spotify_callbacks_;
@@ -98,7 +103,6 @@ SpotifyClient::~SpotifyClient() {
 
   free(const_cast<char*>(spotify_config_.cache_location));
   free(const_cast<char*>(spotify_config_.settings_location));
-  free(const_cast<void*>(spotify_config_.application_key));
 }
 
 void SpotifyClient::Init(quint16 port) {
@@ -125,6 +129,9 @@ void SpotifyClient::LoggedInCallback(sp_session* session, sp_error error) {
     break;
   case SP_ERROR_USER_NEEDS_PREMIUM :
     error_code = spotify_pb::LoginResponse_Error_UserNeedsPremium;
+    break;
+  default:
+    error_code = spotify_pb::LoginResponse_Error_Other;
     break;
   }
 
@@ -259,8 +266,7 @@ void SpotifyClient::SendSearchResponse(sp_search* result) {
 
 void SpotifyClient::HandleMessage(const spotify_pb::SpotifyMessage& message) {
   if (message.has_login_request()) {
-    const spotify_pb::LoginRequest& r = message.login_request();
-    Login(QStringFromStdString(r.username()), QStringFromStdString(r.password()));
+    Login(message.login_request());
   } else if (message.has_load_playlist_request()) {
     LoadPlaylist(message.load_playlist_request());
   } else if (message.has_playback_request()) {
@@ -275,10 +281,28 @@ void SpotifyClient::HandleMessage(const spotify_pb::SpotifyMessage& message) {
     SyncPlaylist(message.sync_playlist_request());
   } else if (message.has_browse_album_request()) {
     BrowseAlbum(QStringFromStdString(message.browse_album_request().uri()));
+  } else if (message.has_set_playback_settings_request()) {
+    SetPlaybackSettings(message.set_playback_settings_request());
   }
 }
 
-void SpotifyClient::Login(const QString& username, const QString& password) {
+void SpotifyClient::SetPlaybackSettings(const spotify_pb::PlaybackSettings& req) {
+  sp_bitrate bitrate = SP_BITRATE_320k;
+  switch (req.bitrate()) {
+    case spotify_pb::Bitrate96k:  bitrate = SP_BITRATE_96k;  break;
+    case spotify_pb::Bitrate160k: bitrate = SP_BITRATE_160k; break;
+    case spotify_pb::Bitrate320k: bitrate = SP_BITRATE_320k; break;
+  }
+
+  qLog(Debug) << "Setting playback settings: bitrate"
+              << bitrate << "normalisation" << req.volume_normalisation();
+
+  sp_session_preferred_bitrate(session_, bitrate);
+  sp_session_preferred_offline_bitrate(session_, bitrate, false);
+  sp_session_set_volume_normalization(session_, req.volume_normalisation());
+}
+
+void SpotifyClient::Login(const spotify_pb::LoginRequest& req) {
   sp_error error = sp_session_create(&spotify_config_, &session_);
   if (error != SP_ERROR_OK) {
     qLog(Warning) << "Failed to create session" << sp_error_message(error);
@@ -286,14 +310,21 @@ void SpotifyClient::Login(const QString& username, const QString& password) {
     return;
   }
 
-  sp_session_preferred_bitrate(session_, SP_BITRATE_320k);
-  sp_session_preferred_offline_bitrate(session_, SP_BITRATE_320k, false);
+  SetPlaybackSettings(req.playback_settings());
 
-#if SPOTIFY_API_VERSION < 9
-  sp_session_login(session_, username.toUtf8().constData(), password.toUtf8().constData());
-#else
-  sp_session_login(session_, username.toUtf8().constData(), password.toUtf8().constData(), true);
-#endif
+  if (req.password().empty()) {
+    sp_error error = sp_session_relogin(session_);
+    if (error != SP_ERROR_OK) {
+      qLog(Warning) << "Tried to relogin but no stored credentials";
+      SendLoginCompleted(false, sp_error_message(error),
+                         spotify_pb::LoginResponse_Error_ReloginFailed);
+    }
+  } else {
+    sp_session_login(session_,
+                     req.username().c_str(),
+                     req.password().c_str(),
+                     true);  // Remember the password.
+  }
 }
 
 void SpotifyClient::SendLoginCompleted(bool success, const QString& error,
@@ -603,7 +634,7 @@ int SpotifyClient::MusicDeliveryCallback(
     const void* frames, int num_frames) {
   SpotifyClient* me = reinterpret_cast<SpotifyClient*>(sp_session_userdata(session));
 
-  if (!me->media_socket_) {
+  if (!me->media_pipeline_) {
     return 0;
   }
 
@@ -611,79 +642,55 @@ int SpotifyClient::MusicDeliveryCallback(
     return 0;
   }
 
-  // Write the WAVE header if it hasn't been written yet.
-  if (me->media_length_msec_ != -1) {
-    qLog(Debug) << "Sending WAVE header";
-
-    QDataStream s(me->media_socket_);
-    s.setByteOrder(QDataStream::LittleEndian);
-
-    const int bytes_per_sample = 2;
-    const int byte_rate = format->sample_rate * format->channels * bytes_per_sample;
-    const quint32 data_size = quint64(me->media_length_msec_) * byte_rate / 1000;
-
-    qLog(Debug) << "length" << me->media_length_msec_ << "byte_rate" << byte_rate
-                << "data_size" << data_size;
-
-    // RIFF header
-    s.writeRawData("RIFF", 4);
-    s << quint32(32 + data_size);
-    s.writeRawData("WAVE", 4);
-
-    // WAVE fmt sub-chunk
-    s.writeRawData("fmt ", 4);
-    s << quint32(16);                                  // Subchunk1Size
-    s << quint16(1);                                   // AudioFormat
-    s << quint16(format->channels);                    // NumChannels
-    s << quint32(format->sample_rate);                 // SampleRate
-    s << quint32(byte_rate);                           // ByteRate
-    s << quint16(format->channels * bytes_per_sample); // BlockAlign
-    s << quint16(bytes_per_sample * 8);                // BitsPerSample
-
-    // Data sub-chunk
-    s.writeRawData("data", 4);
-    s << quint32(data_size);
-
-    me->media_length_msec_ = -1;
-    me->byte_rate_ = byte_rate;
+  if (!me->media_pipeline_->is_initialised()) {
+    if (!me->media_pipeline_->Init(format->sample_rate, format->channels)) {
+      qLog(Warning) << "Failed to intitialise media pipeline";
+      sp_session_player_unload(me->session_);
+      me->media_pipeline_.reset();
+      return 0;
+    }
   }
 
-  if (me->media_socket_->bytesToWrite() >= 8192) {
+  if (!me->media_pipeline_->is_accepting_data()) {
     return 0;
   }
 
-  // Write the audio data.
-  qint64 bytes_written = me->media_socket_->write(
+  me->media_pipeline_->WriteData(
         reinterpret_cast<const char*>(frames),
         num_frames * format->channels * 2);
 
-#ifdef Q_OS_DARWIN
-  // ???
-  me->media_socket_->flush();
-#endif
-
-  return bytes_written / (format->channels * 2);
+  return num_frames;
 }
 
 void SpotifyClient::EndOfTrackCallback(sp_session* session) {
   SpotifyClient* me = reinterpret_cast<SpotifyClient*>(sp_session_userdata(session));
 
-  // Close the socket - it will get deleted when the other side has
-  // disconnected
-  me->media_socket_->close();
-  me->media_socket_ = NULL;
+  me->media_pipeline_.reset();
 }
 
 void SpotifyClient::StreamingErrorCallback(sp_session* session, sp_error error) {
   SpotifyClient* me = reinterpret_cast<SpotifyClient*>(sp_session_userdata(session));
 
-  // Close the socket - it will get deleted when the other side has
-  // disconnected
-  me->media_socket_->close();
-  me->media_socket_ = NULL;
+  me->media_pipeline_.reset();
 
   // Send the error
   me->SendPlaybackError(QString::fromUtf8(sp_error_message(error)));
+}
+
+void SpotifyClient::ConnectionErrorCallback(sp_session* session, sp_error error) {
+  qLog(Debug) << Q_FUNC_INFO << sp_error_message(error);
+}
+
+void SpotifyClient::UserMessageCallback(sp_session* session, const char* message) {
+  qLog(Debug) << Q_FUNC_INFO << message;
+}
+
+void SpotifyClient::StartPlaybackCallback(sp_session* session) {
+  qLog(Debug) << Q_FUNC_INFO;
+}
+
+void SpotifyClient::StopPlaybackCallback(sp_session* session) {
+  qLog(Debug) << Q_FUNC_INFO;
 }
 
 void SpotifyClient::OfflineStatusUpdatedCallback(sp_session* session) {
@@ -783,11 +790,8 @@ void SpotifyClient::StartPlayback(const spotify_pb::PlaybackRequest& req) {
 }
 
 void SpotifyClient::Seek(qint64 offset_bytes) {
-  if (byte_rate_) {
-    const int msec = ((offset_bytes - kWaveHeaderSize) * 1000) / byte_rate_;
-    qLog(Debug) << "Seeking to time" << msec << "ms";
-    sp_session_player_seek(session_, msec);
-  }
+  // TODO
+  qLog(Error) << "TODO seeking";
 }
 
 void SpotifyClient::TryPlaybackAgain(const PendingPlaybackRequest& req) {
@@ -810,22 +814,11 @@ void SpotifyClient::TryPlaybackAgain(const PendingPlaybackRequest& req) {
   }
 
   // Create the media socket
-  QTcpSocket* old_media_socket = media_socket_;
-  media_socket_ = new QTcpSocket(this);
-  media_socket_->connectToHost(QHostAddress::LocalHost, req.request_.media_port());
-  media_socket_->setSocketOption(QAbstractSocket::LowDelayOption, true);
-  connect(media_socket_, SIGNAL(disconnected()), SLOT(MediaSocketDisconnected()));
-
-  if (old_media_socket) {
-    old_media_socket->close();
-  }
+  media_pipeline_.reset(new MediaPipeline(req.request_.media_port(),
+                                          sp_track_duration(req.track_)));
 
   qLog(Info) << "Starting playback of uri" << req.request_.track_uri().c_str()
              << "to port" << req.request_.media_port();
-
-  // Set the track length - this will trigger MusicDeliveryCallback to send
-  // a WAVE header.
-  media_length_msec_ = sp_track_duration(req.track_);
 
   // Start playback
   sp_session_player_play(session_, true);
@@ -839,22 +832,6 @@ void SpotifyClient::SendPlaybackError(const QString& error) {
 
   msg->set_error(DataCommaSizeFromQString(error));
   handler_->SendMessage(message);
-}
-
-void SpotifyClient::MediaSocketDisconnected() {
-  QTcpSocket* socket = qobject_cast<QTcpSocket*>(sender());
-  if (!socket) {
-    return;
-  }
-
-  qLog(Info) << "Media socket disconnected";
-
-  socket->deleteLater();
-
-  if (socket == media_socket_) {
-    sp_session_player_unload(session_);
-    media_socket_ = NULL;
-  }
 }
 
 void SpotifyClient::LoadImage(const QString& id_b64) {

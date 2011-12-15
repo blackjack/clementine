@@ -17,10 +17,11 @@
 
 #include "spotifysettingspage.h"
 
-#include "core/network.h"
 #include "spotifyservice.h"
 #include "internetmodel.h"
 #include "ui_spotifysettingspage.h"
+#include "core/network.h"
+#include "spotifyblob/common/spotifymessages.pb.h"
 #include "ui/iconloader.h"
 
 #include <QMessageBox>
@@ -31,7 +32,6 @@
 
 SpotifySettingsPage::SpotifySettingsPage(SettingsDialog* dialog)
   : SettingsPage(dialog),
-    network_(new NetworkAccessManager(this)),
     ui_(new Ui_SpotifySettingsPage),
     service_(InternetModel::Service<SpotifyService>()),
     validated_(false)
@@ -55,6 +55,10 @@ SpotifySettingsPage::SpotifySettingsPage(SettingsDialog* dialog)
   ui_->login_state->AddCredentialField(ui_->username);
   ui_->login_state->AddCredentialField(ui_->password);
   ui_->login_state->AddCredentialGroup(ui_->account_group);
+
+  ui_->bitrate->addItem("96 " + tr("kbps"), spotify_pb::Bitrate96k);
+  ui_->bitrate->addItem("160 " + tr("kbps"), spotify_pb::Bitrate160k);
+  ui_->bitrate->addItem("320 " + tr("kbps"), spotify_pb::Bitrate320k);
 
   BlobStateChanged();
 }
@@ -100,11 +104,14 @@ void SpotifySettingsPage::Load() {
   s.beginGroup(SpotifyService::kSettingsGroup);
 
   original_username_ = s.value("username").toString();
-  original_password_ = s.value("password").toString();
 
   ui_->username->setText(original_username_);
-  ui_->password->setText(original_password_);
   validated_ = false;
+
+  ui_->bitrate->setCurrentIndex(ui_->bitrate->findData(
+      s.value("bitrate", spotify_pb::Bitrate320k).toInt()));
+  ui_->volume_normalisation->setChecked(
+      s.value("volume_normalisation", false).toBool());
 
   UpdateLoginState();
 }
@@ -115,6 +122,9 @@ void SpotifySettingsPage::Save() {
 
   s.setValue("username", ui_->username->text());
   s.setValue("password", ui_->password->text());
+
+  s.setValue("bitrate", ui_->bitrate->itemData(ui_->bitrate->currentIndex()).toInt());
+  s.setValue("volume_normalisation", ui_->volume_normalisation->isChecked());
 }
 
 void SpotifySettingsPage::LoginFinished(bool success) {
@@ -141,6 +151,10 @@ void SpotifySettingsPage::UpdateLoginState() {
   case SpotifyService::LoginState_Banned:
   case SpotifyService::LoginState_BadCredentials:
     ui_->login_state->SetAccountTypeText(tr("Your username or password was incorrect."));
+    break;
+
+  case SpotifyService::LoginState_ReloginFailed:
+    ui_->login_state->SetAccountTypeText(tr("You have been logged out of Spotify, please re-enter your password."));
     break;
 
   default:

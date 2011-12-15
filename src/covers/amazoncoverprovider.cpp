@@ -16,6 +16,7 @@
 */
 
 #include "amazoncoverprovider.h"
+#include "core/closure.h"
 #include "core/logging.h"
 #include "core/network.h"
 #include "core/utilities.h"
@@ -28,6 +29,7 @@
 const char* AmazonCoverProvider::kAccessKey = "AKIAJ4QO3GQTSM3A43BQ";
 const char* AmazonCoverProvider::kSecretAccessKey = "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";
 const char* AmazonCoverProvider::kUrl = "http://ecs.amazonaws.com/onca/xml";
+const char* AmazonCoverProvider::kAssociateTag = "clementine-20";
 
 AmazonCoverProvider::AmazonCoverProvider(QObject* parent)
   : CoverProvider("Amazon", parent),
@@ -45,6 +47,7 @@ bool AmazonCoverProvider::StartSearch(const QString& artist, const QString& albu
   // Must be sorted by parameter name
   ArgList args = ArgList()
       << Arg("AWSAccessKeyId", kAccessKey)
+      << Arg("AssociateTag", kAssociateTag)
       << Arg("Keywords", artist + " " + album)
       << Arg("Operation", "ItemSearch")
       << Arg("ResponseGroup", "Images")
@@ -75,20 +78,15 @@ bool AmazonCoverProvider::StartSearch(const QString& artist, const QString& albu
   encoded_args << EncodedArg("Signature", QUrl::toPercentEncoding(signature.toBase64()));
   url.setEncodedQueryItems(encoded_args);
 
-  // Make the request
   QNetworkReply* reply = network_->get(QNetworkRequest(url));
-  connect(reply, SIGNAL(finished()), SLOT(QueryFinished()));
-  pending_queries_[reply] = id;
+  NewClosure(reply, SIGNAL(finished()),
+             this, SLOT(QueryFinished(QNetworkReply*, int)),
+             reply, id);
 
   return true;
 }
 
-void AmazonCoverProvider::QueryFinished() {
-  QNetworkReply* reply = qobject_cast<QNetworkReply*>(sender());
-  if (!reply || !pending_queries_.contains(reply))
-    return;
-
-  int id = pending_queries_.take(reply);
+void AmazonCoverProvider::QueryFinished(QNetworkReply* reply, int id) {
   reply->deleteLater();
 
   CoverSearchResults results;

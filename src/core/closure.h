@@ -55,8 +55,7 @@ class Closure : public QObject, boost::noncopyable {
   Closure(QObject* sender, const char* signal,
           QObject* receiver, const char* slot,
           const ClosureArgumentWrapper* val0 = 0,
-          const ClosureArgumentWrapper* val1 = 0,
-          const ClosureArgumentWrapper* val2 = 0);
+          const ClosureArgumentWrapper* val1 = 0);
 
   Closure(QObject* sender, const char* signal,
           std::tr1::function<void()> callback);
@@ -73,7 +72,6 @@ class Closure : public QObject, boost::noncopyable {
 
   boost::scoped_ptr<const ClosureArgumentWrapper> val0_;
   boost::scoped_ptr<const ClosureArgumentWrapper> val1_;
-  boost::scoped_ptr<const ClosureArgumentWrapper> val2_;
 };
 
 #define C_ARG(type, data) new ClosureArgument<type>(data)
@@ -108,20 +106,5 @@ Closure* NewClosure(
       sender, signal, receiver, slot,
       C_ARG(T0, val0), C_ARG(T1, val1));
 }
-
-template <typename T0, typename T1, typename T2>
-Closure* NewClosure(
-    QObject* sender,
-    const char* signal,
-    QObject* receiver,
-    const char* slot,
-    const T0& val0,
-    const T1& val1,
-    const T2& val2) {
-  return new Closure(
-      sender, signal, receiver, slot,
-      C_ARG(T0, val0), C_ARG(T1, val1), C_ARG(T2, val2));
-}
-
 
 #endif  // CLOSURE_H

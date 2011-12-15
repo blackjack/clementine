@@ -27,6 +27,9 @@ include_directories(${QTIOCOMPRESSOR_INCLUDE_DIRS})
 include_directories(${QXT_INCLUDE_DIRS})
 include_directories(${ECHONEST_INCLUDE_DIRS})
 
+find_package(OpenGL)
+include_directories(${OPENGL_INCLUDE_DIR})
+
 if(HAVE_LIBINDICATE)
   link_directories(${INDICATEQT_LIBRARY_DIRS})
   include_directories(${INDICATEQT_INCLUDE_DIRS})
@@ -39,10 +42,6 @@ endif(HAVE_LIBLASTFM)
 if(HAVE_BREAKPAD)
   include_directories(../3rdparty/google-breakpad)
 endif(HAVE_BREAKPAD)
-
-if(HAVE_REMOTE)
-  include_directories(${PJSIP_INCLUDE_DIRS})
-endif(HAVE_REMOTE)
 
 cmake_policy(SET CMP0011 NEW)
 include(../cmake/ParseArguments.cmake)
@@ -121,7 +120,6 @@ set(SOURCES
   globalsearch/digitallyimportedsearchprovider.cpp
   globalsearch/globalsearch.cpp
   globalsearch/globalsearchitemdelegate.cpp
-  globalsearch/globalsearchpopup.cpp
   globalsearch/globalsearchsettingspage.cpp
   globalsearch/globalsearchsortmodel.cpp
   globalsearch/globalsearchtooltip.cpp
@@ -135,11 +133,13 @@ set(SOURCES
   globalsearch/somafmsearchprovider.cpp
   globalsearch/tooltipactionwidget.cpp
   globalsearch/tooltipresultwidget.cpp
+  globalsearch/urlsearchprovider.cpp
 
   internet/digitallyimportedclient.cpp
   internet/digitallyimportedservicebase.cpp
   internet/digitallyimportedsettingspage.cpp
   internet/digitallyimportedurlhandler.cpp
+  internet/groovesharkradio.cpp
   internet/groovesharksearchplaylisttype.cpp
   internet/groovesharkservice.cpp
   internet/groovesharksettingspage.cpp
@@ -217,9 +217,6 @@ set(SOURCES
   playlistparsers/plsparser.cpp
   playlistparsers/xmlparser.cpp
   playlistparsers/xspfparser.cpp
-
-  resolvers/libraryresolver.cpp
-  resolvers/songresolver.cpp
 
   smartplaylists/generator.cpp
   smartplaylists/generatorinserter.cpp
@@ -378,21 +375,18 @@ set(HEADERS
   engines/gstelementdeleter.h
 
   globalsearch/globalsearch.h
-  globalsearch/globalsearchpopup.h
   globalsearch/globalsearchsettingspage.h
   globalsearch/globalsearchtooltip.h
   globalsearch/globalsearchwidget.h
   globalsearch/groovesharksearchprovider.h
   globalsearch/searchprovider.h
   globalsearch/simplesearchprovider.h
-  globalsearch/somafmsearchprovider.h
   globalsearch/tooltipactionwidget.h
   globalsearch/tooltipresultwidget.h
 
   internet/digitallyimportedclient.h
   internet/digitallyimportedservicebase.h
   internet/digitallyimportedsettingspage.h
-  internet/groovesharksearchplaylisttype.h
   internet/groovesharkservice.h
   internet/groovesharksettingspage.h
   internet/groovesharkurlhandler.h
@@ -403,6 +397,7 @@ set(HEADERS
   internet/internetmimedata.h
   internet/internetmodel.h
   internet/internetservice.h
+  internet/internetsongmimedata.h
   internet/internetview.h
   internet/internetviewcontainer.h
   internet/jamendodynamicplaylist.h
@@ -458,10 +453,6 @@ set(HEADERS
   playlistparsers/playlistparser.h
   playlistparsers/plsparser.h
   playlistparsers/xspfparser.h
-
-  resolvers/libraryresolver.h
-  resolvers/resolver.h
-  resolvers/songresolver.h
 
   smartplaylists/generator.h
   smartplaylists/generatorinserter.h
@@ -558,7 +549,6 @@ set(UI
 
   devices/deviceproperties.ui
 
-  globalsearch/globalsearchpopup.ui
   globalsearch/globalsearchsettingspage.ui
   globalsearch/globalsearchwidget.ui
 
@@ -716,14 +706,12 @@ optional_source(HAVE_SPOTIFY
     internet/spotifyserver.cpp
     internet/spotifyservice.cpp
     internet/spotifysettingspage.cpp
-    resolvers/spotifyresolver.cpp
   HEADERS
     globalsearch/spotifysearchprovider.h
     internet/spotifyblobdownloader.h
     internet/spotifyserver.h
     internet/spotifyservice.h
     internet/spotifysettingspage.h
-    resolvers/spotifyresolver.h
 )
 
 optional_source(HAVE_QCA INCLUDE_DIRECTORIES ${QCA_INCLUDE_DIRS})
@@ -737,7 +725,6 @@ optional_source(APPLE
     core/macglobalshortcutbackend.mm
     core/mac_startup.mm
     devices/macdevicelister.mm
-    globalsearch/globalsearchpopup.mm
     ui/globalshortcutgrabber.mm
     ui/macscreensaver.cpp
     ui/macsystemtrayicon.mm
@@ -927,13 +914,11 @@ optional_source(WIN32
 
 optional_source(HAVE_REMOTE
   SOURCES
-    remote/icesession.cpp
     remote/portforwarder.cpp
     remote/remote.cpp
     remote/remotesettingspage.cpp
     remote/streampipeline.cpp
   HEADERS
-    remote/icesession.h
     remote/portforwarder.h
     remote/remote.h
     remote/remotesettingspage.h
@@ -997,7 +982,6 @@ target_link_libraries(clementine_lib
   ${QTSINGLECOREAPPLICATION_LIBRARIES}
   ${QTIOCOMPRESSOR_LIBRARIES}
   ${CMAKE_THREAD_LIBS_INIT}
-  dl
   z
 )
 
@@ -1045,8 +1029,6 @@ if(HAVE_REMOTE)
   link_directories(${GLOOX_LIBRARY_DIRS})
   target_link_libraries(clementine_lib xrme)
   target_link_libraries(clementine_lib portfwd)
-  target_link_libraries(clementine_lib ${PJSIP_LIBRARIES})
-  link_directories(${PJSIP_LIBRARY_DIRS})
 endif(HAVE_REMOTE)
 
 if(HAVE_BREAKPAD)
@@ -1063,7 +1045,6 @@ endif(HAVE_BREAKPAD)
 if(HAVE_SPOTIFY)
   target_link_libraries(clementine_lib
     clementine-spotifyblob-messages
-    gstspotifytcpsrc
     ${QCA_LIBRARIES}
   )
   link_directories(${QCA_LIBRARY_DIRS})
@@ -1109,7 +1090,8 @@ if (LINUX)
   # command but they're actually used by libraries that appear after them, so
   # they end up getting ignored.  This appends them to the very end of the link
   # line, ensuring they're always used.
-  target_link_libraries(clementine_lib -lX11 -ldl)
+  find_package(X11)
+  target_link_libraries(clementine_lib ${X11_X11_LIB} ${CMAKE_DL_LIBS})
 endif (LINUX)
 
 add_dependencies(clementine_lib qtsingleapplication)
@@ -1202,7 +1184,7 @@ if (APPLE)
   add_custom_command(
     OUTPUT ${PROJECT_BINARY_DIR}/clementine-${CLEMENTINE_VERSION_RPM}.dmg
     ${CMAKE_COMMAND} -E remove -f ${PROJECT_BINARY_DIR}/clementine-${CLEMENTINE_VERSION_RPM}.dmg
-    COMMAND macdeployqt clementine.app -no-plugins -dmg
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/../dist/create-dmg.sh ${PROJECT_BINARY_DIR}/clementine.app
     COMMAND ${CMAKE_COMMAND} -E rename
       ${PROJECT_BINARY_DIR}/clementine.dmg
       ${PROJECT_BINARY_DIR}/clementine-${CLEMENTINE_VERSION_RPM}.dmg

@@ -65,6 +65,8 @@ class PlaylistView : public QTreeView {
 
   static const int kStateVersion;
 
+  static ColumnAlignmentMap DefaultColumnAlignment();
+
   void SetItemDelegates(LibraryBackend* backend);
   void SetPlaylist(Playlist* playlist);
   void RemoveSelected();
@@ -73,12 +75,13 @@ class PlaylistView : public QTreeView {
 
   Playlist* playlist() const { return playlist_; }
   bool      background_enabled() const { return background_enabled_; }
+  Qt::Alignment column_alignment(int section) const;
 
   // QTreeView
   void drawTree(QPainter* painter, const QRegion& region) const;
   void drawRow(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const;
   void keyPressEvent(QKeyEvent* event);
-  void setModel(QAbstractItemModel *model);
+  void setModel(QAbstractItemModel* model);
 
  public slots:
   void ReloadSettings();
@@ -88,6 +91,7 @@ class PlaylistView : public QTreeView {
   void JumpToLastPlayedTrack();
   void closeEditor(QWidget* editor, QAbstractItemDelegate::EndEditHint hint);
   void DynamicModeChanged(bool dynamic);
+  void SetColumnAlignment(int section, Qt::Alignment alignment);
 
  signals:
   void PlayItem(const QModelIndex& index);
@@ -96,6 +100,7 @@ class PlaylistView : public QTreeView {
   void SeekTrack(int gap);
   void FocusOnFilterSignal(QKeyEvent *event);
   void BackgroundPropertyChanged();
+  void ColumnAlignmentChanged(const ColumnAlignmentMap& alignment);
 
  protected:
   // QWidget
@@ -194,6 +199,8 @@ class PlaylistView : public QTreeView {
   bool drag_over_;
 
   DynamicPlaylistControls* dynamic_controls_;
+
+  ColumnAlignmentMap column_alignment_;
 };
 
 #endif // PLAYLISTVIEW_H

@@ -39,7 +39,8 @@ public:
     LoginState_Banned = 2,
     LoginState_BadCredentials = 3,
     LoginState_NoPremium = 4,
-    LoginState_OtherError = 5
+    LoginState_OtherError = 5,
+    LoginState_ReloginFailed = 6
   };
 
   static const char* kServiceName;
@@ -58,7 +59,7 @@ public:
   void Logout();
   void Login(const QString& username, const QString& password);
   void Search(const QString& text, Playlist* playlist, bool now = false);
-  Q_INVOKABLE void LoadImage(const QUrl& url);
+  Q_INVOKABLE void LoadImage(const QString& id);
 
   SpotifyServer* server() const;
 
@@ -74,7 +75,7 @@ public:
 signals:
   void BlobStateChanged();
   void LoginFinished(bool success);
-  void ImageLoaded(const QUrl& url, const QImage& image);
+  void ImageLoaded(const QString& id, const QImage& image);
 
 public slots:
   void ShowConfig();
@@ -88,7 +89,7 @@ private:
   void EnsureMenuCreated();
 
   QStandardItem* PlaylistBySpotifyIndex(int index) const;
-  bool DoPlaylistsDiffer(const spotify_pb::Playlists& response);
+  bool DoPlaylistsDiffer(const spotify_pb::Playlists& response) const;
 
 private slots:
   void EnsureServerCreated(const QString& username = QString(),
@@ -101,7 +102,6 @@ private slots:
   void StarredLoaded(const spotify_pb::LoadPlaylistResponse& response);
   void UserPlaylistLoaded(const spotify_pb::LoadPlaylistResponse& response);
   void SearchResults(const spotify_pb::SearchResponse& response);
-  void ImageLoaded(const QString& id, const QImage& image);
   void SyncPlaylistProgress(const spotify_pb::SyncPlaylistProgress& progress);
 
   void OpenSearchTab();
@@ -140,6 +140,8 @@ private:
   QMap<int, int> playlist_sync_ids_;
 
   LoginState login_state_;
+  spotify_pb::Bitrate bitrate_;
+  bool volume_normalisation_;
 };
 
 #endif

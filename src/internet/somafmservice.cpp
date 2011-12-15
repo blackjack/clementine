@@ -81,7 +81,7 @@ void SomaFMService::ShowContextMenu(const QModelIndex& index, const QPoint& glob
   if (!context_menu_) {
     context_menu_ = new QMenu;
     context_menu_->addActions(GetPlaylistActions());
-    context_menu_->addAction(IconLoader::Load("download"), tr("Open somafm.com in browser"), this, SLOT(Homepage()));
+    context_menu_->addAction(IconLoader::Load("download"), tr("Open %1 in browser").arg("somafm.com"), this, SLOT(Homepage()));
     context_menu_->addAction(IconLoader::Load("view-refresh"), tr("Refresh channels"), this, SLOT(RefreshStreams()));
   }
 
@@ -121,7 +121,11 @@ void SomaFMService::RefreshStreamsFinished(QNetworkReply* reply, int task_id) {
   }
 
   streams_.Update(list);
-  PopulateStreams();
+
+  // Only update the item's children if it's already been populated
+  if (!root_->data(InternetModel::Role_CanLazyLoad).toBool())
+    PopulateStreams();
+
   emit StreamsChanged();
 }
 

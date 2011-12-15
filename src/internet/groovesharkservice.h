@@ -45,10 +45,11 @@ class GroovesharkService : public InternetService {
   };
 
   enum PlaylistType {
-    NormalPlaylist = Qt::UserRole,
+    UserPlaylist = Qt::UserRole,
     // Favorites list is like a playlist, but we want to do special treatments
     // in some cases
-    UserFavorites
+    UserFavorites,
+    SubscribedPlaylist
   };
 
   // Values are persisted - don't change.
@@ -64,13 +65,14 @@ class GroovesharkService : public InternetService {
   void LazyPopulate(QStandardItem *parent);
 
   void ItemDoubleClicked(QStandardItem* item);
+  smart_playlists::GeneratorPtr CreateGenerator(QStandardItem* item);
   void DropMimeData(const QMimeData* data, const QModelIndex& index);
   QList<QAction*> playlistitem_actions(const Song& song);
   void ShowContextMenu(const QModelIndex& index, const QPoint& global_pos);
 
   void Search(const QString& text, Playlist* playlist, bool now = false);
   // User should be logged in to be able to generate streaming urls
-  QUrl GetStreamingUrlFromSongId(const QString& song_id,
+  QUrl GetStreamingUrlFromSongId(const QString& song_id, const QString& artist_id,
                                  QString* server_id, QString* stream_key,
                                  qint64* length_nanosec);
   void Login(const QString& username, const QString& password);
@@ -78,14 +80,26 @@ class GroovesharkService : public InternetService {
   bool IsLoggedIn() const { return !session_id_.isEmpty(); }
   void RetrieveUserPlaylists();
   void RetrieveUserFavorites();
+  void RetrievePopularSongs();
+  void RetrievePopularSongsMonth();
+  void RetrievePopularSongsToday();
+  void RetrieveSubscribedPlaylists();
+  void RetrieveAutoplayTags();
   void SetPlaylistSongs(int playlist_id, const QList<int>& songs_ids);
   void RemoveFromPlaylist(int playlist_id, int song_id);
   // Refresh playlist_id playlist , or create it if it doesn't exist
-  void RefreshPlaylist(int playlist_id, const QString& playlist_name);
+  void RefreshPlaylist(int playlist_id);
   void DeletePlaylist(int playlist_id);
+  void RenamePlaylist(int playlist_id);
   void AddUserFavoriteSong(int song_id);
   void RemoveFromFavorites(int song_id);
   void GetSongUrlToShare(int song_id);
+  // Start autoplay for the given tag_id, fill the autoplay_state, returns a
+  // first song to play
+  Song StartAutoplayTag(int tag_id, QVariantMap& autoplay_state);
+  Song StartAutoplay(QVariantMap& autoplay_state);
+  // Get another autoplay song. autoplay_state is the autoplay_state received from StartAutoplayTag
+  Song GetAutoplaySong(QVariantMap& autoplay_state);
   void MarkStreamKeyOver30Secs(const QString& stream_key, const QString& server_id);
   void MarkSongComplete(const QString& song_id, const QString& stream_key, const QString& server_id);
 
@@ -115,8 +129,8 @@ class GroovesharkService : public InternetService {
 
   struct PlaylistInfo {
     PlaylistInfo() {}
-    PlaylistInfo(int id, QString name)
-      : id_(id), name_(name), item_(NULL) {}
+    PlaylistInfo(int id, QString name, QStandardItem* item)
+      : id_(id), name_(name), item_(item) {}
 
     int id_;
     QString name_;
@@ -136,24 +150,31 @@ class GroovesharkService : public InternetService {
   void GetAlbumSongsFinished(QNetworkReply* reply, int id);
   void Authenticated();
   void UserPlaylistsRetrieved();
-  void UserFavoritesRetrieved();
+  void UserFavoritesRetrieved(QNetworkReply* reply, int task_id);
+  void PopularSongsMonthRetrieved(QNetworkReply* reply);
+  void PopularSongsTodayRetrieved(QNetworkReply* reply);
+  void SubscribedPlaylistsRetrieved(QNetworkReply* reply);
+  void AutoplayTagsRetrieved(QNetworkReply* reply);
   void PlaylistSongsRetrieved();
-  void PlaylistSongsSet(QNetworkReply* reply, int playlist_id);
+  void PlaylistSongsSet(QNetworkReply* reply, int playlist_id, int task_id);
   void CreateNewPlaylist();
   void NewPlaylistCreated(QNetworkReply* reply, const QString& name);
   void DeleteCurrentPlaylist();
+  void RenameCurrentPlaylist();
   void PlaylistDeleted(QNetworkReply* reply, int playlist_id);
+  void PlaylistRenamed(QNetworkReply* reply, int playlist_id, const QString& new_name);
   void AddCurrentSongToUserFavorites() { AddUserFavoriteSong(current_song_id_); }
   void AddCurrentSongToPlaylist(QAction* action);
-  void UserFavoriteSongAdded(QNetworkReply* reply);
+  void UserFavoriteSongAdded(QNetworkReply* reply, int task_id);
   void GetCurrentSongUrlToShare();
   void SongUrlToShareReceived(QNetworkReply* reply);
   void RemoveCurrentFromPlaylist();
   void RemoveCurrentFromFavorites();
-  void SongRemovedFromFavorites(QNetworkReply* reply);
+  void SongRemovedFromFavorites(QNetworkReply* reply, int task_id);
   void StreamMarked();
   void SongMarkedAsComplete();
 
+  void Homepage();
 
  private:
   void EnsureMenuCreated();
@@ -171,12 +192,19 @@ class GroovesharkService : public InternetService {
   // If need_authentication is true, add session_id to params.
   // Returns the reply object created
   QNetworkReply* CreateRequest(const QString& method_name, const QList<QPair<QString, QVariant> > params,
-                     bool need_authentication = false,
                      bool use_https = false);
+  // Convenient function which block until 'reply' replies, or timeout after 10
+  // seconds. Returns false if reply has timeouted
+  bool WaitForReply(QNetworkReply* reply);
   // Convenient function for extracting result from reply
   QVariantMap ExtractResult(QNetworkReply* reply);
-  // Convenient function for extracting songs from grooveshark result
+  // Convenient function for extracting songs from grooveshark result. result
+  // should be the "result" field of most Grooveshark replies
   SongList ExtractSongs(const QVariantMap& result);
+  // Convenient function for extracting song from grooveshark result.
+  // result_song should be the song field ('song', 'nextSong', ...) of the
+  // Grooveshark reply
+  Song ExtractSong(const QVariantMap& result_song);
   // Convenient functions for extracting Grooveshark songs ids
   QList<int> ExtractSongsIds(const QVariantMap& result);
   QList<int> ExtractSongsIds(const QList<QUrl>& urls);
@@ -193,13 +221,19 @@ class GroovesharkService : public InternetService {
   int next_pending_search_id_;
   QMap<QNetworkReply*, int> pending_searches_;
 
-  QMap<QNetworkReply*, PlaylistInfo> pending_retrieve_playlists_;
+  QMap<QNetworkReply*, int> pending_retrieve_playlists_;
 
   QMap<int, PlaylistInfo> playlists_;
+  QMap<int, PlaylistInfo> subscribed_playlists_;
 
   QStandardItem* root_;
   QStandardItem* search_;
+  QStandardItem* popular_month_;
+  QStandardItem* popular_today_;
+  QStandardItem* stations_;
+  QStandardItem* grooveshark_radio_;
   QStandardItem* favorites_;
+  QStandardItem* subscribed_playlists_divider_;
 
   NetworkAccessManager* network_;
 
@@ -209,6 +243,7 @@ class GroovesharkService : public InternetService {
 
   QAction* create_playlist_;
   QAction* delete_playlist_;
+  QAction* rename_playlist_;
   QAction* remove_from_playlist_;
   QAction* remove_from_favorites_;
   QList<QAction*> playlistitem_actions_;
@@ -221,12 +256,22 @@ class GroovesharkService : public InternetService {
   QString user_id_;
   QString session_id_;
   QMap<QString, QVariant> country_;
+  // The last artists and songs ids th users has listened to. Used for autoplay
+  QList<int> last_artists_ids_;
+  QList<int> last_songs_ids_;
   QByteArray api_key_;
 
   LoginState login_state_;
 
+  // Tasks' ids: we need to keep them in mind to be able to update task status
+  // on each step
+  int task_popular_id_;
+  int task_playlists_id_;
+  int task_search_id_;
+
   static const char* kUrl;
   static const char* kUrlCover;
+  static const char* kHomepage;
 
   static const int kSongSearchLimit;
   static const int kSongSimpleSearchLimit;

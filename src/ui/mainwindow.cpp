@@ -41,7 +41,6 @@
 #include "engines/enginebase.h"
 #include "engines/gstengine.h"
 #include "globalsearch/globalsearch.h"
-#include "globalsearch/globalsearchpopup.h"
 #include "globalsearch/librarysearchprovider.h"
 #include "internet/jamendoservice.h"
 #include "internet/magnatuneservice.h"
@@ -239,7 +238,7 @@ MainWindow::MainWindow(
   // Add global search providers
   global_search->AddProvider(new LibrarySearchProvider(
       library_->backend(), tr("Library"), "library",
-      IconLoader::Load("folder-sound"), global_search));
+      IconLoader::Load("folder-sound"), true, this));
 
   global_search->ReloadSettings();
 
@@ -611,7 +610,7 @@ MainWindow::MainWindow(
 #ifdef Q_OS_WIN32
   qLog(Debug) << "Creating sparkle updater";
   qtsparkle::Updater* updater = new qtsparkle::Updater(
-      QUrl("http://data.clementine-player.org/sparkle-windows"), this);
+      QUrl("https://clementine-data.appspot.com/sparkle-windows"), this);
   updater->SetNetworkAccessManager(new NetworkAccessManager(this));
   updater->SetVersion(CLEMENTINE_VERSION);
   connect(check_updates, SIGNAL(triggered()), updater, SLOT(CheckNow()));
@@ -633,7 +632,6 @@ MainWindow::MainWindow(
   connect(global_shortcuts_, SIGNAL(ShowHide()), SLOT(ToggleShowHide()));
   connect(global_shortcuts_, SIGNAL(ShowOSD()), player_, SLOT(ShowOSD()));
   connect(global_shortcuts_, SIGNAL(TogglePrettyOSD()), player_, SLOT(TogglePrettyOSD()));
-  connect(global_shortcuts_, SIGNAL(ShowGlobalSearch()), SLOT(ShowGlobalSearch()));
 #ifdef HAVE_LIBLASTFM
   connect(global_shortcuts_, SIGNAL(ToggleScrobbling()), internet_model->InternetModel::Service<LastFMService>(), SLOT(ToggleScrobbling()));
 #endif
@@ -875,6 +873,9 @@ void MainWindow::MediaPlaying() {
   bool enable_play_pause = !(player_->GetCurrentItem()->options() & PlaylistItem::PauseDisabled);
   ui_->action_play_pause->setEnabled(enable_play_pause);
 
+  bool can_seek = !(player_->GetCurrentItem()->options() & PlaylistItem::SeekDisabled);
+  ui_->track_slider->SetCanSeek(can_seek);
+
 #ifdef HAVE_LIBLASTFM
   bool is_lastfm = (player_->GetCurrentItem()->options() & PlaylistItem::LastFMControls);
   LastFMService* lastfm = InternetModel::Service<LastFMService>();
@@ -887,10 +888,7 @@ void MainWindow::MediaPlaying() {
   tray_icon_->LastFMButtonLoveStateChanged(enable_love);
 
   tray_icon_->SetPlaying(enable_play_pause, enable_ban, enable_love);
-
-  ui_->track_slider->SetCanSeek(!is_lastfm);
 #else
-  ui_->track_slider->SetCanSeek(true);
   tray_icon_->SetPlaying(enable_play_pause);
 #endif
 
@@ -1715,9 +1713,6 @@ void MainWindow::CommandlineOptionsReceived(const CommandlineOptions &options) {
 
   if (options.toggle_pretty_osd())
     player_->TogglePrettyOSD();
-
-  if (options.show_search_popup())
-    ShowGlobalSearch();
 }
 
 void MainWindow::ForceShowOSD(const Song &song, const bool toggle) {
@@ -2063,7 +2058,8 @@ void MainWindow::ConnectInfoView(SongInfoBase* view) {
   connect(player_, SIGNAL(Stopped()), view, SLOT(SongFinished()));
 
   connect(view, SIGNAL(ShowSettingsDialog()), SLOT(ShowSongInfoConfig()));
-  connect(view, SIGNAL(AddToPlaylist(QMimeData*)), SLOT(AddToPlaylist(QMimeData*)));
+  connect(view, SIGNAL(DoGlobalSearch(QString)),
+          ui_->global_search, SLOT(StartSearch(QString)));
 }
 
 void MainWindow::AddSongInfoGenerator(smart_playlists::GeneratorPtr gen) {
@@ -2269,15 +2265,4 @@ void MainWindow::HandleNotificationPreview(OSD::Behaviour type, QString line1, Q
 
     osd_->ShowPreview(type, line1, line2, fake);
   }
-}
-
-void MainWindow::ShowGlobalSearch() {
-  if (!search_popup_) {
-    search_popup_.reset(new GlobalSearchPopup);
-    search_popup_->Init(global_search_, player_);
-    StyleSheetLoader* css_loader = new StyleSheetLoader(search_popup_.get());
-    css_loader->SetStyleSheet(search_popup_.get(), ":mainwindow.css");
-    connect(search_popup_.get(), SIGNAL(AddToPlaylist(QMimeData*)), SLOT(AddToPlaylist(QMimeData*)));
-  }
-  search_popup_->show();
 }

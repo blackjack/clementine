@@ -33,7 +33,7 @@
 #include <QVariant>
 
 const char* Database::kDatabaseFilename = "clementine.db";
-const int Database::kSchemaVersion = 34;
+const int Database::kSchemaVersion = 36;
 const char* Database::kMagicAllSongsTables = "%allsongstables";
 
 int Database::sNextConnectionId = 1;
@@ -516,6 +516,12 @@ void Database::UpdateDatabaseSchema(int version, QSqlDatabase &db) {
     
     UrlEncodeFilenameColumn("songs", db);
     UrlEncodeFilenameColumn("playlist_items", db);
+
+    foreach (const QString& table, db.tables()) {
+      if (table.startsWith("device_") && table.endsWith("_songs")) {
+        UrlEncodeFilenameColumn(table, db);
+      }
+    }
   }
   
   ExecFromFile(filename, db, version - 1);

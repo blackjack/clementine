@@ -134,7 +134,7 @@ GlobalSearchWidget::GlobalSearchWidget(QWidget* parent)
   next_suggestion_timer_->setInterval(kSuggestionTimeoutMsec);
   hint_text_ = ui_->search->hint();
 
-  connect(ui_->search, SIGNAL(textEdited(QString)), SLOT(TextEdited(QString)));
+  connect(ui_->search, SIGNAL(textChanged(QString)), SLOT(TextEdited(QString)));
   connect(view_, SIGNAL(doubleClicked(QModelIndex)), SLOT(ResultDoubleClicked()));
   connect(view_->selectionModel(), SIGNAL(currentChanged(QModelIndex,QModelIndex)),
           SLOT(UpdateTooltip()));
@@ -225,12 +225,6 @@ void GlobalSearchWidget::TextEdited(const QString& text) {
   const QString trimmed_text = text.trimmed();
   closed_since_search_began_ = false;
 
-  if (trimmed_text.length() < 3) {
-    RepositionPopup();
-    last_id_ = -1;
-    return;
-  }
-
   // Add results to the back model, switch models after some delay.
   back_model_->clear();
   combine_cache_[back_model_]->Clear();
@@ -241,6 +235,11 @@ void GlobalSearchWidget::TextEdited(const QString& text) {
 
   // Cancel the last search (if any) and start the new one.
   engine_->CancelSearch(last_id_);
+  // If text query is empty, don't start a new search
+  if (trimmed_text.isEmpty()) {
+    last_id_ = -1;
+    return;
+  }
   last_id_ = engine_->SearchAsync(trimmed_text);
 }
 
@@ -256,6 +255,15 @@ void GlobalSearchWidget::SwapModels() {
 
   if (!closed_since_search_began_)
     RepositionPopup();
+}
+
+void GlobalSearchWidget::StartSearch(const QString& query) {
+  ui_->search->setText(query);
+  TextEdited(query);
+
+  // Swap models immediately
+  swap_models_timer_->stop();
+  SwapModels();
 }
 
 void GlobalSearchWidget::AddResults(int id, const SearchProvider::ResultList& results) {
@@ -359,6 +367,14 @@ bool GlobalSearchWidget::EventFilterSearchWidget(QObject* o, QEvent* e) {
       return true;
     break;
 
+  case QEvent::FocusIn: {
+    QFocusEvent* fe = static_cast<QFocusEvent*>(e);
+    if (fe->reason() == Qt::MouseFocusReason) {
+      RepositionPopup();
+    }
+    break;
+  }
+
   case QEvent::KeyPress: {
     QKeyEvent* ke = static_cast<QKeyEvent*>(e);
     const int key = ke->key();
@@ -371,6 +387,10 @@ bool GlobalSearchWidget::EventFilterSearchWidget(QObject* o, QEvent* e) {
       // If we got one of these it means the popup wasn't visible, so show it
       // now.
       RepositionPopup();
+      return true;
+
+    case Qt::Key_Escape:
+      ui_->search->LineEditInterface::clear();
       return true;
 
     default:

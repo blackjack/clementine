@@ -32,6 +32,7 @@
 class QTcpSocket;
 class QTimer;
 
+class MediaPipeline;
 class ResponseMessage;
 class SpotifyMessageHandler;
 
@@ -50,7 +51,6 @@ public:
 private slots:
   void HandleMessage(const spotify_pb::SpotifyMessage& message);
   void ProcessEvents();
-  void MediaSocketDisconnected();
 
 private:
   void SendLoginCompleted(bool success, const QString& error,
@@ -70,6 +70,10 @@ private:
   static void SP_CALLCONV EndOfTrackCallback(sp_session* session);
   static void SP_CALLCONV StreamingErrorCallback(sp_session* session, sp_error error);
   static void SP_CALLCONV OfflineStatusUpdatedCallback(sp_session* session);
+  static void SP_CALLCONV ConnectionErrorCallback(sp_session* session, sp_error error);
+  static void SP_CALLCONV UserMessageCallback(sp_session* session, const char* message);
+  static void SP_CALLCONV StartPlaybackCallback(sp_session* session);
+  static void SP_CALLCONV StopPlaybackCallback(sp_session* session);
 
   // Spotify playlist container callbacks.
   static void SP_CALLCONV PlaylistAddedCallback(
@@ -99,7 +103,7 @@ private:
   static void SP_CALLCONV AlbumBrowseComplete(sp_albumbrowse* result, void* userdata);
 
   // Request handlers.
-  void Login(const QString& username, const QString& password);
+  void Login(const spotify_pb::LoginRequest& req);
   void Search(const spotify_pb::SearchRequest& req);
   void LoadPlaylist(const spotify_pb::LoadPlaylistRequest& req);
   void SyncPlaylist(const spotify_pb::SyncPlaylistRequest& req);
@@ -107,6 +111,7 @@ private:
   void Seek(qint64 offset_bytes);
   void LoadImage(const QString& id_b64);
   void BrowseAlbum(const QString& uri);
+  void SetPlaybackSettings(const spotify_pb::PlaybackSettings& req);
 
   void SendPlaylistList();
 
@@ -150,7 +155,6 @@ private:
   QByteArray api_key_;
 
   QTcpSocket* protocol_socket_;
-  QTcpSocket* media_socket_;
   SpotifyMessageHandler* handler_;
 
   sp_session_config spotify_config_;
@@ -172,8 +176,7 @@ private:
   QMap<sp_search*, QList<sp_albumbrowse*> > pending_search_album_browses_;
   QMap<sp_albumbrowse*, sp_search*> pending_search_album_browse_responses_;
 
-  int media_length_msec_;
-  int byte_rate_;
+  QScopedPointer<MediaPipeline> media_pipeline_;
 };
 
 #endif // SPOTIFYCLIENT_H

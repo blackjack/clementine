@@ -26,6 +26,7 @@
 #include "core/network.h"
 #include "core/scopedtransaction.h"
 #include "core/taskmanager.h"
+#include "core/timeconstants.h"
 #include "globalsearch/globalsearch.h"
 #include "globalsearch/librarysearchprovider.h"
 #include "library/librarybackend.h"
@@ -123,8 +124,8 @@ JamendoService::JamendoService(InternetModel* parent)
       tr("Jamendo"),
       "jamendo",
       QIcon(":/providers/jamendo.png"),
-      this),
-    false /* disabled Jamendo by default */);
+      false,
+      this));
 }
 
 JamendoService::~JamendoService() {
@@ -373,8 +374,8 @@ Song JamendoService::ReadTrack(const QString& artist,
         if (id == 0)
           continue;
 
-        QString ogg_url = QString(kOggStreamUrl).arg(id_text);
-        song.set_url(QUrl(ogg_url));
+        QString mp3_url = QString(kMp3StreamUrl).arg(id_text);
+        song.set_url(QUrl(mp3_url));
         song.set_art_automatic(album_cover);
         song.set_valid(true);
 
@@ -411,7 +412,7 @@ void JamendoService::EnsureMenuCreated() {
   download_album_ = context_menu_->addAction(IconLoader::Load("download"),
       tr("Download this album..."), this, SLOT(DownloadAlbum()));
   context_menu_->addSeparator();
-  context_menu_->addAction(IconLoader::Load("download"), tr("Open jamendo.com in browser"), this, SLOT(Homepage()));
+  context_menu_->addAction(IconLoader::Load("download"), tr("Open %1 in browser").arg("jamendo.com"), this, SLOT(Homepage()));
   context_menu_->addAction(IconLoader::Load("view-refresh"), tr("Refresh catalogue"), this, SLOT(DownloadDirectory()));
 
   if (accepted_download_) {

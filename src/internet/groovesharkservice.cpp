@@ -21,6 +21,7 @@
 
 #include <QApplication>
 #include <QClipboard>
+#include <QDesktopServices>
 #include <QInputDialog>
 #include <QMenu>
 #include <QMessageBox>
@@ -36,6 +37,7 @@
 #include "qtiocompressor.h"
 
 #include "internetmodel.h"
+#include "groovesharkradio.h"
 #include "groovesharksearchplaylisttype.h"
 #include "groovesharkurlhandler.h"
 
@@ -56,6 +58,9 @@
 #include "playlist/playlistmanager.h"
 #include "ui/iconloader.h"
 
+using smart_playlists::Generator;
+using smart_playlists::GeneratorPtr;
+
 // The Grooveshark terms of service require that application keys are not
 // accessible to third parties. Therefore this application key is obfuscated to
 // prevent third parties from viewing it.
@@ -66,9 +71,10 @@ const char* GroovesharkService::kServiceName = "Grooveshark";
 const char* GroovesharkService::kSettingsGroup = "Grooveshark";
 const char* GroovesharkService::kUrl = "http://api.grooveshark.com/ws/3.0/";
 const char* GroovesharkService::kUrlCover = "http://beta.grooveshark.com/static/amazonart/m";
+const char* GroovesharkService::kHomepage = "http://grooveshark.com/";
 
 const int GroovesharkService::kSearchDelayMsec = 400;
-const int GroovesharkService::kSongSearchLimit = 50;
+const int GroovesharkService::kSongSearchLimit = 100;
 const int GroovesharkService::kSongSimpleSearchLimit = 10;
 
 typedef QPair<QString, QVariant> Param;
@@ -80,15 +86,26 @@ GroovesharkService::GroovesharkService(InternetModel *parent)
     next_pending_search_id_(0),
     root_(NULL),
     search_(NULL),
+    popular_month_(NULL),
+    popular_today_(NULL),
+    stations_(NULL),
+    grooveshark_radio_(NULL),
     favorites_(NULL),
+    subscribed_playlists_divider_(NULL),
     network_(new NetworkAccessManager(this)),
     context_menu_(NULL),
+    create_playlist_(NULL),
+    delete_playlist_(NULL),
+    rename_playlist_(NULL),
     remove_from_playlist_(NULL),
     remove_from_favorites_(NULL),
     search_delay_(new QTimer(this)),
     last_search_reply_(NULL),
     api_key_(QByteArray::fromBase64(kApiSecret)),
-    login_state_(LoginState_OtherError) {
+    login_state_(LoginState_OtherError),
+    task_popular_id_(0),
+    task_playlists_id_(0),
+    task_search_id_(0) {
 
   model()->player()->RegisterUrlHandler(url_handler_);
   model()->player()->playlists()->RegisterSpecialPlaylistType(new GroovesharkSearchPlaylistType(this));
@@ -105,7 +122,7 @@ GroovesharkService::GroovesharkService(InternetModel *parent)
 
   GroovesharkSearchProvider* search_provider = new GroovesharkSearchProvider(this);
   search_provider->Init(this);
-  model()->global_search()->AddProvider(search_provider, false);
+  model()->global_search()->AddProvider(search_provider);
 
   // Init secret: this code is ugly, but that's good as nobody is supposed to wonder what it does
   QByteArray ba = QByteArray::fromBase64(QCoreApplication::applicationName().toLatin1());
@@ -144,6 +161,14 @@ void GroovesharkService::Search(const QString& text, Playlist* playlist, bool no
   pending_search_ = text;
   pending_search_playlist_ = playlist;
 
+  // If there is no text (e.g. user cleared search box), we don't need to do a
+  // real query that will return nothing: we can clear the playlist now
+  if (text.isEmpty()) {
+    search_delay_->stop();
+    pending_search_playlist_->Clear();
+    return;
+  }
+
   if (now) {
     search_delay_->stop();
     DoSearch();
@@ -159,7 +184,7 @@ int GroovesharkService::SimpleSearch(const QString& query) {
              << Param("limit", QString::number(kSongSimpleSearchLimit))
              << Param("offset", "");
 
-  QNetworkReply* reply = CreateRequest("getSongSearchResults", parameters, false);
+  QNetworkReply* reply = CreateRequest("getSongSearchResults", parameters);
   connect(reply, SIGNAL(finished()), SLOT(SimpleSearchFinished()));
 
   int id = next_pending_search_id_++;
@@ -185,7 +210,7 @@ int GroovesharkService::SearchAlbums(const QString& query) {
              << Param("country", "")
              << Param("limit", QString::number(5));
 
-  QNetworkReply* reply = CreateRequest("getAlbumSearchResults", parameters, false);
+  QNetworkReply* reply = CreateRequest("getAlbumSearchResults", parameters);
 
   const int id = next_pending_search_id_++;
 
@@ -236,7 +261,7 @@ void GroovesharkService::FetchSongsForAlbum(int id, quint64 album_id) {
   parameters << Param("albumID", album_id)
              << Param("country", "");
 
-  QNetworkReply* reply = CreateRequest("getAlbumSongs", parameters, false);
+  QNetworkReply* reply = CreateRequest("getAlbumSongs", parameters);
   NewClosure(reply, SIGNAL(finished()),
              this, SLOT(GetAlbumSongsFinished(QNetworkReply*,int)),
              reply, id);
@@ -253,13 +278,17 @@ void GroovesharkService::GetAlbumSongsFinished(
 }
 
 void GroovesharkService::DoSearch() {
+  if (!task_search_id_) {
+    task_search_id_ = model()->task_manager()->StartTask(tr("Searching on Grooveshark"));
+  }
+
   QList<Param> parameters;
 
   parameters  << Param("query", pending_search_)
               << Param("country", "")
               << Param("limit", QString("%1").arg(kSongSearchLimit))
               << Param("offset", "");
-  last_search_reply_ = CreateRequest("getSongSearchResults", parameters, false);
+  last_search_reply_ = CreateRequest("getSongSearchResults", parameters);
   connect(last_search_reply_, SIGNAL(finished()), SLOT(SearchSongsFinished()));
 }
 
@@ -274,59 +303,45 @@ void GroovesharkService::SearchSongsFinished() {
   SongList songs = ExtractSongs(result);
   pending_search_playlist_->Clear();
   pending_search_playlist_->InsertInternetItems(this, songs);
+  model()->task_manager()->SetTaskFinished(task_search_id_);
+  task_search_id_ = 0;
 }
 
 void GroovesharkService::InitCountry() {
   if (!country_.isEmpty())
     return;
   // Get country info
-  QNetworkReply *reply_country = CreateRequest("getCountry", QList<Param>(), true);
+  QNetworkReply *reply_country = CreateRequest("getCountry", QList<Param>());
+  if (!WaitForReply(reply_country))
+    return;
 
-  // Wait for the reply
-  {
-    QEventLoop event_loop;
-    QTimer timeout_timer;
-    connect(&timeout_timer, SIGNAL(timeout()), &event_loop, SLOT(quit()));
-    connect(reply_country, SIGNAL(finished()), &event_loop, SLOT(quit()));
-    timeout_timer.start(3000);
-    event_loop.exec();
-    if (!timeout_timer.isActive()) {
-      qLog(Error) << "Grooveshark request timeout";
-      return;
-    }
-    timeout_timer.stop();
-  }
   country_ = ExtractResult(reply_country);
 }
 
-QUrl GroovesharkService::GetStreamingUrlFromSongId(const QString& song_id,
+QUrl GroovesharkService::GetStreamingUrlFromSongId(const QString& song_id, const QString& artist_id,
     QString* server_id, QString* stream_key, qint64* length_nanosec) {
   QList<Param> parameters;
 
   InitCountry();
   parameters  << Param("songID", song_id)
               << Param("country", country_);
-  QNetworkReply* reply = CreateRequest("getSubscriberStreamKey", parameters, true);
-  // Wait for the reply
-  {
-    QEventLoop event_loop;
-    QTimer timeout_timer;
-    connect(&timeout_timer, SIGNAL(timeout()), &event_loop, SLOT(quit()));
-    connect(reply, SIGNAL(finished()), &event_loop, SLOT(quit()));
-    timeout_timer.start(3000);
-    event_loop.exec();
-    if (!timeout_timer.isActive()) {
-      qLog(Error) << "Grooveshark request timeout";
-      return QUrl();
-    }
-    timeout_timer.stop();
-  }
+  QNetworkReply* reply = CreateRequest("getSubscriberStreamKey", parameters);
+  if (!WaitForReply(reply))
+    return QUrl();
   QVariantMap result = ExtractResult(reply);
   server_id->clear();
   server_id->append(result["StreamServerID"].toString());
   stream_key->clear();
   stream_key->append(result["StreamKey"].toString());
   *length_nanosec = result["uSecs"].toLongLong() * 1000;
+  // Keep in mind that user has request to listen to this song
+  last_songs_ids_.append(song_id.toInt());
+  last_artists_ids_.append(artist_id.toInt());
+  // If we have enough ids, remove the old ones
+  if (last_songs_ids_.size() > 100)
+    last_songs_ids_.removeFirst();
+  if (last_artists_ids_.size() > 100)
+    last_artists_ids_.removeFirst();
 
   return QUrl(result["url"].toString());
 }
@@ -339,7 +354,7 @@ void GroovesharkService::Login(const QString& username, const QString& password)
   password_ = QCryptographicHash::hash(password.toLocal8Bit(), QCryptographicHash::Md5).toHex();
 
   QList<Param> parameters;
-  QNetworkReply *reply = CreateRequest("startSession", parameters, false, true);
+  QNetworkReply *reply = CreateRequest("startSession", parameters, true);
 
   connect(reply, SIGNAL(finished()), SLOT(SessionCreated()));
 }
@@ -366,7 +381,7 @@ void GroovesharkService::AuthenticateSession() {
   parameters  << Param("login", username_)
               << Param("password", password_);
 
-  QNetworkReply *reply = CreateRequest("authenticate", parameters, true, true);
+  QNetworkReply *reply = CreateRequest("authenticate", parameters, true);
   connect(reply, SIGNAL(finished()), SLOT(Authenticated()));
 }
 
@@ -402,11 +417,17 @@ void GroovesharkService::Authenticated() {
 void GroovesharkService::Logout() {
   ResetSessionId();
   root_->removeRows(0, root_->rowCount());
-  // 'search' and 'favorites' items were root's children, and have been deleted:
-  // we should update these now invalid pointers
+  // 'search', 'favorites', 'popular', ... items were root's children, and have
+  // been deleted: we should update these now invalid pointers
   search_ = NULL;
+  popular_month_ = NULL;
+  popular_today_ = NULL;
   favorites_ = NULL;
+  subscribed_playlists_divider_ = NULL;
+  stations_ = NULL;
+  grooveshark_radio_ = NULL;
   playlists_.clear();
+  subscribed_playlists_.clear();
 }
 
 void GroovesharkService::ResetSessionId() {
@@ -426,7 +447,7 @@ void GroovesharkService::ShowContextMenu(const QModelIndex& index, const QPoint&
         display_remove_from_favorites_action = false;
 
   if (index.data(InternetModel::Role_Type).toInt() == InternetModel::Type_UserPlaylist &&
-      index.data(Role_PlaylistType).toInt() != UserFavorites) {
+      index.data(Role_PlaylistType).toInt() == UserPlaylist) {
     display_delete_playlist_action = true;
   }
   // We check parent's type (instead of index type) because we want to enable
@@ -436,10 +457,12 @@ void GroovesharkService::ShowContextMenu(const QModelIndex& index, const QPoint&
     int parent_playlist_type = index.parent().data(Role_PlaylistType).toInt();
     if (parent_playlist_type == UserFavorites)
       display_remove_from_favorites_action = true;
-    else
+    else if (parent_playlist_type == UserPlaylist)
       display_remove_from_playlist_action = true;
   }
   delete_playlist_->setVisible(display_delete_playlist_action);
+  // If we can delete this playlist, we can also rename it
+  rename_playlist_->setVisible(display_delete_playlist_action);
   remove_from_playlist_->setVisible(display_remove_from_playlist_action);
   remove_from_favorites_->setVisible(display_remove_from_favorites_action);
 
@@ -464,6 +487,9 @@ void GroovesharkService::EnsureMenuCreated() {
     delete_playlist_ = context_menu_->addAction(
         IconLoader::Load("edit-delete"), tr("Delete Grooveshark playlist"),
         this, SLOT(DeleteCurrentPlaylist()));
+    rename_playlist_ = context_menu_->addAction(
+        IconLoader::Load("edit-rename"), tr("Rename Grooveshark playlist"),
+        this, SLOT(RenameCurrentPlaylist()));
     context_menu_->addSeparator();
     remove_from_playlist_ = context_menu_->addAction(
         IconLoader::Load("list-remove"), tr("Remove from playlist"),
@@ -474,8 +500,13 @@ void GroovesharkService::EnsureMenuCreated() {
     context_menu_->addSeparator();
     context_menu_->addAction(IconLoader::Load("edit-find"), tr("Search Grooveshark (opens a new tab)") + "...", this, SLOT(OpenSearchTab()));
     context_menu_->addSeparator();
+    context_menu_->addAction(IconLoader::Load("download"), tr("Open %1 in browser").arg("grooveshark.com"), this, SLOT(Homepage()));
     context_menu_->addAction(IconLoader::Load("configure"), tr("Configure Grooveshark..."), this, SLOT(ShowConfig()));
   }
+}
+
+void GroovesharkService::Homepage() {
+  QDesktopServices::openUrl(QUrl(kHomepage));
 }
 
 void GroovesharkService::EnsureItemsCreated() {
@@ -484,10 +515,63 @@ void GroovesharkService::EnsureItemsCreated() {
                                 tr("Search Grooveshark (opens a new tab)"));
     search_->setData(Type_SearchResults, InternetModel::Role_Type);
     search_->setData(InternetModel::PlayBehaviour_DoubleClickAction,
-                             InternetModel::Role_PlayBehaviour);
+                     InternetModel::Role_PlayBehaviour);
     root_->appendRow(search_);
+
+    QStandardItem* popular_divider = new QStandardItem(tr("Popular songs"));
+    popular_divider->setData(true, InternetModel::Role_IsDivider);
+    root_->appendRow(popular_divider);
+
+    popular_month_ = new QStandardItem(QIcon(":/star-on.png"), tr("Popular songs of the Month"));
+    popular_month_->setData(InternetModel::Type_UserPlaylist, InternetModel::Role_Type);
+    popular_month_->setData(true, InternetModel::Role_CanLazyLoad);
+    popular_month_->setData(InternetModel::PlayBehaviour_SingleItem,
+                        InternetModel::Role_PlayBehaviour);
+    root_->appendRow(popular_month_);
+
+    popular_today_ = new QStandardItem(QIcon(":/star-on.png"), tr("Popular songs today"));
+    popular_today_->setData(InternetModel::Type_UserPlaylist, InternetModel::Role_Type);
+    popular_today_->setData(true, InternetModel::Role_CanLazyLoad);
+    popular_today_->setData(InternetModel::PlayBehaviour_SingleItem,
+                        InternetModel::Role_PlayBehaviour);
+    root_->appendRow(popular_today_);
+
+    QStandardItem* radios_divider = new QStandardItem(tr("Radios"));
+    radios_divider->setData(true, InternetModel::Role_IsDivider);
+    root_->appendRow(radios_divider);
+
+    stations_ = new QStandardItem(QIcon(":last.fm/icon_radio.png"), tr("Stations"));
+    stations_->setData(InternetModel::Type_UserPlaylist, InternetModel::Role_Type);
+    stations_->setData(true, InternetModel::Role_CanLazyLoad);
+    root_->appendRow(stations_);
+
+    grooveshark_radio_ = new QStandardItem(QIcon(":last.fm/icon_radio.png"), tr("Grooveshark radio"));
+    grooveshark_radio_->setToolTip(tr("Listen to Grooveshark songs based on what you've listened to previously"));
+    grooveshark_radio_->setData(InternetModel::Type_SmartPlaylist, InternetModel::Role_Type);
+    root_->appendRow(grooveshark_radio_);
+
+    QStandardItem* playlists_divider = new QStandardItem(tr("Playlists"));
+    playlists_divider->setData(true, InternetModel::Role_IsDivider);
+    root_->appendRow(playlists_divider);
+
+    favorites_ = new QStandardItem(QIcon(":/last.fm/love.png"), tr("Favorites"));
+    favorites_->setData(InternetModel::Type_UserPlaylist, InternetModel::Role_Type);
+    favorites_->setData(UserFavorites, Role_PlaylistType);
+    favorites_->setData(true, InternetModel::Role_CanLazyLoad);
+    favorites_->setData(true, InternetModel::Role_CanBeModified);
+    favorites_->setData(InternetModel::PlayBehaviour_SingleItem,
+                        InternetModel::Role_PlayBehaviour);
+    root_->appendRow(favorites_);
+
+    subscribed_playlists_divider_ = new QStandardItem(tr("Subscribed playlists"));
+    subscribed_playlists_divider_->setData(true, InternetModel::Role_IsDivider);
+    root_->appendRow(subscribed_playlists_divider_);
+
     RetrieveUserFavorites();
     RetrieveUserPlaylists();
+    RetrieveSubscribedPlaylists();
+    RetrieveAutoplayTags();
+    RetrievePopularSongs();
   }
 }
 
@@ -503,6 +587,7 @@ QStandardItem* GroovesharkService::CreatePlaylistItem(const QString& playlist_na
                                                       int playlist_id) {
   QStandardItem* item = new QStandardItem(playlist_name);
   item->setData(InternetModel::Type_UserPlaylist, InternetModel::Role_Type);
+  item->setData(UserPlaylist, Role_PlaylistType);
   item->setData(true, InternetModel::Role_CanLazyLoad);
   item->setData(true, InternetModel::Role_CanBeModified);
   item->setData(InternetModel::PlayBehaviour_SingleItem, InternetModel::Role_PlayBehaviour);
@@ -511,7 +596,9 @@ QStandardItem* GroovesharkService::CreatePlaylistItem(const QString& playlist_na
 }
 
 void GroovesharkService::RetrieveUserPlaylists() {
-  QNetworkReply* reply = CreateRequest("getUserPlaylists", QList<Param>(), true);
+  task_playlists_id_ =
+    model()->task_manager()->StartTask(tr("Retrieving Grooveshark playlists"));
+  QNetworkReply* reply = CreateRequest("getUserPlaylists", QList<Param>());
 
   connect(reply, SIGNAL(finished()), SLOT(UserPlaylistsRetrieved()));
 }
@@ -525,15 +612,26 @@ void GroovesharkService::UserPlaylistsRetrieved() {
 
   QVariantMap result = ExtractResult(reply);
   QVariantList playlists = result["playlists"].toList();
-  QVariantList::iterator it;
-  for (it = playlists.begin(); it != playlists.end(); ++it) {
+
+  foreach (const QVariant& playlist_variant, playlists) {
     // Get playlist info
-    QVariantMap playlist = (*it).toMap();
+    QVariantMap playlist = playlist_variant.toMap();
     int playlist_id = playlist["PlaylistID"].toInt();
     QString playlist_name = playlist["PlaylistName"].toString();
 
+    QStandardItem* playlist_item =
+        CreatePlaylistItem(playlist_name, playlist_id);
+    // Insert this new item just below the favorites list
+    root_->insertRow(favorites_->row() + 1, playlist_item);
+    // Keep in mind this playlist
+    playlists_.insert(playlist_id,
+                      PlaylistInfo(playlist_id, playlist_name, playlist_item));
     // Request playlist's songs
-    RefreshPlaylist(playlist_id, playlist_name);
+    RefreshPlaylist(playlist_id);
+  }
+
+  if (playlists.isEmpty()) {
+    model()->task_manager()->SetTaskFinished(task_playlists_id_);
   }
 }
 
@@ -545,19 +643,12 @@ void GroovesharkService::PlaylistSongsRetrieved() {
   reply->deleteLater();
 
   // Find corresponding playlist info
-  PlaylistInfo playlist_info = pending_retrieve_playlists_.take(reply);
-  // Get the playlist item (in case of refresh) or create a new one
-  QStandardItem* item = NULL;
-  if (playlists_.contains(playlist_info.id_)) {
-    item = playlists_[playlist_info.id_].item_;
+  int playlist_id = pending_retrieve_playlists_.take(reply);
+  PlaylistInfo& playlist_info = playlists_[playlist_id];
+  if (subscribed_playlists_.contains(playlist_id)) { 
+    playlist_info = subscribed_playlists_[playlist_id];
   }
-  bool item_already_exists = false;
-  if (item) {
-    item_already_exists = true;
-    item->removeRows(0, item->rowCount());
-  } else {
-    item = CreatePlaylistItem(playlist_info.name_, playlist_info.id_);
-  }
+  playlist_info.item_->removeRows(0, playlist_info.item_->rowCount());
 
   QVariantMap result = ExtractResult(reply);
   SongList songs = ExtractSongs(result);
@@ -570,43 +661,30 @@ void GroovesharkService::PlaylistSongsRetrieved() {
     child->setData(playlist_info.id_, Role_UserPlaylistId);
     child->setData(true, InternetModel::Role_CanBeModified);
 
-    item->appendRow(child);
-  }
-  if (!item_already_exists) {
-    root_->appendRow(item);
+    playlist_info.item_->appendRow(child);
   }
 
   // Keep in mind this playlist
   playlist_info.songs_ids_ = ExtractSongsIds(result);
-  playlist_info.item_ = item;
-  playlists_.insert(playlist_info.id_, playlist_info);
+
+  if (pending_retrieve_playlists_.isEmpty()) {
+    model()->task_manager()->SetTaskFinished(task_playlists_id_);
+  }
 }
 
 void GroovesharkService::RetrieveUserFavorites() {
-  QNetworkReply* reply = CreateRequest("getUserFavoriteSongs", QList<Param>(), true);
+  int task_id =
+    model()->task_manager()->StartTask(tr("Retrieving Grooveshark favorites songs"));
+  QNetworkReply* reply = CreateRequest("getUserFavoriteSongs", QList<Param>());
 
-  connect(reply, SIGNAL(finished()), SLOT(UserFavoritesRetrieved()));
+  NewClosure(reply, SIGNAL(finished()),
+      this, SLOT(UserFavoritesRetrieved(QNetworkReply*, int)), reply, task_id);
 }
 
-void GroovesharkService::UserFavoritesRetrieved() {
-  QNetworkReply* reply = qobject_cast<QNetworkReply*>(sender());
-  if (!reply)
-    return;
-
+void GroovesharkService::UserFavoritesRetrieved(QNetworkReply* reply, int task_id) {
   reply->deleteLater();
 
-  bool favorites_item_already_exists = false;
-  if (favorites_) {
-    favorites_item_already_exists = true;
-    favorites_->removeRows(0, favorites_->rowCount());
-  } else {
-    favorites_ = new QStandardItem(QIcon(":/last.fm/love.png"), tr("Favorites"));
-    favorites_->setData(InternetModel::Type_UserPlaylist, InternetModel::Role_Type);
-    favorites_->setData(UserFavorites, Role_PlaylistType);
-    favorites_->setData(true, InternetModel::Role_CanLazyLoad);
-    favorites_->setData(true, InternetModel::Role_CanBeModified);
-    favorites_->setData(InternetModel::PlayBehaviour_SingleItem, InternetModel::Role_PlayBehaviour);
-  }
+  favorites_->removeRows(0, favorites_->rowCount());
 
   QVariantMap result = ExtractResult(reply);
   SongList songs = ExtractSongs(result);
@@ -620,9 +698,172 @@ void GroovesharkService::UserFavoritesRetrieved() {
 
     favorites_->appendRow(child);
   }
-  if (!favorites_item_already_exists) {
-    root_->appendRow(favorites_);
+  model()->task_manager()->SetTaskFinished(task_id);
+}
+
+void GroovesharkService::RetrievePopularSongs() {
+  task_popular_id_ =
+    model()->task_manager()->StartTask(tr("Getting Grooveshark popular songs"));
+  RetrievePopularSongsMonth();
+  RetrievePopularSongsToday();
+}
+
+void GroovesharkService::RetrievePopularSongsMonth() {
+  QList<Param> parameters;
+  parameters  << Param("limit", QString::number(kSongSearchLimit));
+  QNetworkReply* reply = CreateRequest("getPopularSongsMonth", parameters);
+  NewClosure(reply, SIGNAL(finished()),
+      this, SLOT(PopularSongsMonthRetrieved(QNetworkReply*)), reply);
+}
+
+void GroovesharkService::PopularSongsMonthRetrieved(QNetworkReply* reply) {
+  reply->deleteLater();
+  QVariantMap result = ExtractResult(reply);
+  SongList songs = ExtractSongs(result);
+  foreach (const Song& song, songs) {
+    QStandardItem* child = new QStandardItem(song.PrettyTitleWithArtist());
+    child->setData(Type_Track, InternetModel::Role_Type);
+    child->setData(QVariant::fromValue(song), InternetModel::Role_SongMetadata);
+    child->setData(InternetModel::PlayBehaviour_SingleItem, InternetModel::Role_PlayBehaviour);
+    child->setData(song.url(), InternetModel::Role_Url);
+
+    popular_month_->appendRow(child);
   }
+
+  model()->task_manager()->IncreaseTaskProgress(task_popular_id_, 50, 100);
+  if (model()->task_manager()->GetTaskProgress(task_popular_id_) >= 100) {
+    model()->task_manager()->SetTaskFinished(task_popular_id_);
+  }
+}
+
+void GroovesharkService::RetrievePopularSongsToday() {
+  QList<Param> parameters;
+  parameters  << Param("limit", QString::number(kSongSearchLimit));
+  QNetworkReply* reply = CreateRequest("getPopularSongsToday", parameters);
+  NewClosure(reply, SIGNAL(finished()),
+      this, SLOT(PopularSongsTodayRetrieved(QNetworkReply*)), reply);
+}
+
+void GroovesharkService::PopularSongsTodayRetrieved(QNetworkReply* reply) {
+  reply->deleteLater();
+  QVariantMap result = ExtractResult(reply);
+  SongList songs = ExtractSongs(result);
+  foreach (const Song& song, songs) {
+    QStandardItem* child = new QStandardItem(song.PrettyTitleWithArtist());
+    child->setData(Type_Track, InternetModel::Role_Type);
+    child->setData(QVariant::fromValue(song), InternetModel::Role_SongMetadata);
+    child->setData(InternetModel::PlayBehaviour_SingleItem, InternetModel::Role_PlayBehaviour);
+    child->setData(song.url(), InternetModel::Role_Url);
+
+    popular_today_->appendRow(child);
+  }
+
+  model()->task_manager()->IncreaseTaskProgress(task_popular_id_, 50, 100);
+  if (model()->task_manager()->GetTaskProgress(task_popular_id_) >= 100) {
+    model()->task_manager()->SetTaskFinished(task_popular_id_);
+  }
+}
+
+void GroovesharkService::RetrieveSubscribedPlaylists() {
+  QNetworkReply* reply = CreateRequest("getUserPlaylistsSubscribed", QList<Param>());
+  NewClosure(reply, SIGNAL(finished()),
+      this, SLOT(SubscribedPlaylistsRetrieved(QNetworkReply*)), reply);
+}
+
+void GroovesharkService::SubscribedPlaylistsRetrieved(QNetworkReply* reply) {
+  reply->deleteLater();
+  QVariantMap result = ExtractResult(reply);
+  QVariantList playlists = result["playlists"].toList();
+  QVariantList::iterator it;
+  for (it = playlists.begin(); it != playlists.end(); ++it) {
+    // Get playlist info
+    QVariantMap playlist = (*it).toMap();
+    int playlist_id = playlist["PlaylistID"].toInt();
+    QString playlist_name = playlist["PlaylistName"].toString();
+
+    QStandardItem* playlist_item = CreatePlaylistItem(playlist_name, playlist_id);
+    // Refine some playlist properties that should be different for subscribed
+    // playlists
+    playlist_item->setData(SubscribedPlaylist, Role_PlaylistType);
+    playlist_item->setData(false, InternetModel::Role_CanBeModified);
+    PlaylistInfo playlist_info(playlist_id, playlist_name, playlist_item);
+    subscribed_playlists_.insert(playlist_id, playlist_info);
+    root_->insertRow(subscribed_playlists_divider_->row() + 1, playlist_item);
+
+    // Request playlist's songs
+    RefreshPlaylist(playlist_id);
+  }
+}
+
+void GroovesharkService::RetrieveAutoplayTags() {
+  QNetworkReply* reply = CreateRequest("getAutoplayTags", QList<Param>());
+  NewClosure(reply, SIGNAL(finished()),
+      this, SLOT(AutoplayTagsRetrieved(QNetworkReply*)), reply);
+}
+
+void GroovesharkService::AutoplayTagsRetrieved(QNetworkReply* reply) {
+  reply->deleteLater();
+  QVariantMap result = ExtractResult(reply);
+  QVariantMap::const_iterator it;
+  for (it = result.constBegin(); it != result.constEnd(); ++it) {
+    int id = it.key().toInt();
+    QString name = it.value().toString().toLower();
+    // Names received aren't very nice: make them more user friendly to display
+    name.replace("_", " ");
+    name[0] = name[0].toUpper();
+
+    QStandardItem* item = new QStandardItem(QIcon(":last.fm/icon_radio.png"), name);
+    item->setData(InternetModel::Type_SmartPlaylist, InternetModel::Role_Type);
+    item->setData(InternetModel::PlayBehaviour_SingleItem, InternetModel::Role_PlayBehaviour);
+    item->setData(id, Role_UserPlaylistId);
+
+    stations_->appendRow(item);
+  }
+}
+
+Song GroovesharkService::StartAutoplayTag(int tag_id, QVariantMap& autoplay_state) {
+  QList<Param> parameters;
+  parameters << Param("tagID", tag_id);
+  QNetworkReply* reply = CreateRequest("startAutoplayTag", parameters);
+  if (!WaitForReply(reply))
+    return Song();
+  reply->deleteLater();
+  QVariantMap result = ExtractResult(reply);
+  autoplay_state = result["autoplayState"].toMap();
+  return ExtractSong(result["nextSong"].toMap());
+}
+
+Song GroovesharkService::StartAutoplay(QVariantMap& autoplay_state) {
+  QList<Param> parameters;
+  QVariantList artists_ids_qvariant;
+  foreach (int artist_id, last_artists_ids_) {
+    artists_ids_qvariant << QVariant(artist_id);
+  }
+  QVariantList songs_ids_qvariant;
+  foreach (int song_id, last_songs_ids_) {
+    songs_ids_qvariant << QVariant(song_id);
+  }
+  parameters  << Param("artistIDs", artists_ids_qvariant)
+              << Param("songIDs", songs_ids_qvariant);
+  QNetworkReply* reply = CreateRequest("startAutoplay", parameters);
+  if (!WaitForReply(reply))
+    return Song();
+  reply->deleteLater();
+  QVariantMap result = ExtractResult(reply);
+  autoplay_state = result["autoplayState"].toMap();
+  return ExtractSong(result["nextSong"].toMap());
+}
+
+Song GroovesharkService::GetAutoplaySong(QVariantMap& autoplay_state) {
+  QList<Param> parameters;
+  parameters << Param("autoplayState", autoplay_state);
+  QNetworkReply* reply = CreateRequest("getAutoplaySong", parameters);
+  if (!WaitForReply(reply))
+    return Song();
+  reply->deleteLater();
+  QVariantMap result = ExtractResult(reply);
+  autoplay_state = result["autoplayState"].toMap();
+  return ExtractSong(result["nextSong"].toMap());
 }
 
 void GroovesharkService::MarkStreamKeyOver30Secs(const QString& stream_key,
@@ -631,7 +872,7 @@ void GroovesharkService::MarkStreamKeyOver30Secs(const QString& stream_key,
   parameters  << Param("streamKey", stream_key)
               << Param("streamServerID", server_id);
 
-  QNetworkReply* reply = CreateRequest("markStreamKeyOver30Secs", parameters, true, false);
+  QNetworkReply* reply = CreateRequest("markStreamKeyOver30Secs", parameters);
   connect(reply, SIGNAL(finished()), SLOT(StreamMarked()));
 }
 
@@ -655,7 +896,7 @@ void GroovesharkService::MarkSongComplete(const QString& song_id,
               << Param("streamKey", stream_key)
               << Param("streamServerID", server_id);
 
-  QNetworkReply* reply = CreateRequest("markSongComplete", parameters, true, false);
+  QNetworkReply* reply = CreateRequest("markSongComplete", parameters);
   connect(reply, SIGNAL(finished()), SLOT(SongMarkedAsComplete()));
 }
 
@@ -683,6 +924,27 @@ void GroovesharkService::ItemDoubleClicked(QStandardItem* item) {
   if (item == root_) {
     EnsureConnected();
   }
+}
+
+GeneratorPtr GroovesharkService::CreateGenerator(QStandardItem* item) {
+  GeneratorPtr ret;
+  if (!item ||
+      item->data(InternetModel::Role_Type).toInt() != InternetModel::Type_SmartPlaylist) {
+    return ret;
+  }
+
+  if (item == grooveshark_radio_) {
+    if (last_artists_ids_.isEmpty()) {
+      QMessageBox::warning(NULL, tr("Error"),
+        tr("To start Grooveshark radio, you should first listen to a few other Grooveshark songs"));
+      return ret;
+    }
+    ret = GeneratorPtr(new GroovesharkRadio(this));
+  } else {
+    int tag_id = item->data(Role_UserPlaylistId).toInt();
+    ret = GeneratorPtr(new GroovesharkRadio(this ,tag_id));
+  }
+  return ret;
 }
 
 void GroovesharkService::DropMimeData(const QMimeData* data, const QModelIndex& index) {
@@ -771,7 +1033,7 @@ void GroovesharkService::GetCurrentSongUrlToShare() {
 void GroovesharkService::GetSongUrlToShare(int song_id) {
   QList<Param> parameters;
   parameters << Param("songID", song_id);
-  QNetworkReply* reply = CreateRequest("getSongURLFromSongID", parameters, true);
+  QNetworkReply* reply = CreateRequest("getSongURLFromSongID", parameters);
 
   NewClosure(reply, SIGNAL(finished()), this,
              SLOT(SongUrlToShareReceived(QNetworkReply*)), reply);
@@ -813,6 +1075,13 @@ void GroovesharkService::AddCurrentSongToPlaylist(QAction* action) {
 }
 
 void GroovesharkService::SetPlaylistSongs(int playlist_id, const QList<int>& songs_ids) {
+  // If we are still retrieving playlists songs, don't update playlist: don't
+  // take the risk to erase all (not yet retrieved) playlist's songs.
+  if (!pending_retrieve_playlists_.isEmpty())
+    return;
+  int task_id =
+    model()->task_manager()->StartTask(tr("Update Grooveshark playlist"));
+
   QList<Param> parameters;
 
   // Convert song ids to QVariant
@@ -824,15 +1093,16 @@ void GroovesharkService::SetPlaylistSongs(int playlist_id, const QList<int>& son
   parameters  << Param("playlistID", playlist_id)
               << Param("songIDs", songs_ids_qvariant);
 
-  QNetworkReply* reply = CreateRequest("setPlaylistSongs", parameters, true);
+  QNetworkReply* reply = CreateRequest("setPlaylistSongs", parameters);
 
   NewClosure(reply, SIGNAL(finished()),
-    this, SLOT(PlaylistSongsSet(QNetworkReply*, int)),
-    reply, playlist_id);
+    this, SLOT(PlaylistSongsSet(QNetworkReply*, int, int)),
+    reply, playlist_id, task_id);
 }
 
-void GroovesharkService::PlaylistSongsSet(QNetworkReply* reply, int playlist_id) {
+void GroovesharkService::PlaylistSongsSet(QNetworkReply* reply, int playlist_id, int task_id) {
   reply->deleteLater();
+  model()->task_manager()->SetTaskFinished(task_id);
 
   QVariantMap result = ExtractResult(reply);
   if (!result["success"].toBool()) {
@@ -840,17 +1110,17 @@ void GroovesharkService::PlaylistSongsSet(QNetworkReply* reply, int playlist_id)
     return;
   }
 
-  RefreshPlaylist(playlist_id, playlists_[playlist_id].name_);
+  RefreshPlaylist(playlist_id);
 }
 
-void GroovesharkService::RefreshPlaylist(int playlist_id, const QString& playlist_name) {
+void GroovesharkService::RefreshPlaylist(int playlist_id) {
   QList<Param> parameters;
   parameters << Param("playlistID", playlist_id);
-  QNetworkReply* reply = CreateRequest("getPlaylistSongs", parameters, true); 
+  QNetworkReply* reply = CreateRequest("getPlaylistSongs", parameters); 
   connect(reply, SIGNAL(finished()), SLOT(PlaylistSongsRetrieved()));
 
   // Keep in mind correspondance between reply object and playlist
-  pending_retrieve_playlists_.insert(reply, PlaylistInfo(playlist_id, playlist_name));
+  pending_retrieve_playlists_.insert(reply, playlist_id);
 }
 
 void GroovesharkService::CreateNewPlaylist() {
@@ -865,7 +1135,7 @@ void GroovesharkService::CreateNewPlaylist() {
   QList<Param> parameters;
   parameters << Param("name", name)
              << Param("songIDs", QVariantList());
-  QNetworkReply* reply = CreateRequest("createPlaylist", parameters, true);
+  QNetworkReply* reply = CreateRequest("createPlaylist", parameters);
   NewClosure(reply, SIGNAL(finished()),
     this, SLOT(NewPlaylistCreated(QNetworkReply*, const QString&)), reply, name);
 }
@@ -880,9 +1150,10 @@ void GroovesharkService::NewPlaylistCreated(QNetworkReply* reply, const QString&
 
   int playlist_id = result["playlistID"].toInt();
   QStandardItem* new_playlist_item = CreatePlaylistItem(name, playlist_id);
-  PlaylistInfo playlist_info(playlist_id, name);
+  PlaylistInfo playlist_info(playlist_id, name, new_playlist_item);
   playlist_info.item_ = new_playlist_item;
-  root_->appendRow(new_playlist_item);
+  // Insert the newly created playlist just above the subscribed playlists
+  root_->insertRow(subscribed_playlists_divider_->row(), new_playlist_item);
   playlists_.insert(playlist_id, playlist_info);
 }
 
@@ -911,7 +1182,7 @@ void GroovesharkService::DeletePlaylist(int playlist_id) {
 
   QList<Param> parameters;
   parameters << Param("playlistID", playlist_id);
-  QNetworkReply* reply = CreateRequest("deletePlaylist", parameters, true);
+  QNetworkReply* reply = CreateRequest("deletePlaylist", parameters);
   NewClosure(reply, SIGNAL(finished()),
     this, SLOT(PlaylistDeleted(QNetworkReply*, int)), reply, playlist_id);
 }
@@ -930,17 +1201,67 @@ void GroovesharkService::PlaylistDeleted(QNetworkReply* reply, int playlist_id) 
   root_->removeRow(playlist_info.item_->row());
 }
 
-void GroovesharkService::AddUserFavoriteSong(int song_id) {
-  QList<Param> parameters;
-  parameters << Param("songID", song_id);
-  QNetworkReply* reply = CreateRequest("addUserFavoriteSong", parameters, true);
-  NewClosure(reply, SIGNAL(finished()),
-             this, SLOT(UserFavoriteSongAdded(QNetworkReply*)),
-             reply);
+void GroovesharkService::RenameCurrentPlaylist() {
+  if (context_item_.data(InternetModel::Role_Type).toInt() != InternetModel::Type_UserPlaylist
+      || context_item_.data(Role_PlaylistType).toInt() != UserPlaylist) {
+    return;
+  }
+
+  int playlist_id = context_item_.data(Role_UserPlaylistId).toInt();
+  RenamePlaylist(playlist_id);
 }
 
-void GroovesharkService::UserFavoriteSongAdded(QNetworkReply* reply) {
+void GroovesharkService::RenamePlaylist(int playlist_id) {
+  if (!playlists_.contains(playlist_id)) {
+    return;
+  }
+  const QString& old_name = playlists_[playlist_id].name_;
+  QString new_name = QInputDialog::getText(NULL,
+                                       tr("Rename \"%1\" playlist").arg(old_name),
+                                       tr("Name"),
+                                       QLineEdit::Normal);
+  if (new_name.isEmpty()) {
+    return;
+  }
+
+  QList<Param> parameters;
+  parameters  << Param("playlistID", playlist_id)
+              << Param("name", new_name);
+  QNetworkReply* reply = CreateRequest("renamePlaylist", parameters);
+  NewClosure(reply, SIGNAL(finished()),
+    this, SLOT(PlaylistRenamed(QNetworkReply*, int, const QString&)), reply, playlist_id, new_name);
+}
+
+void GroovesharkService::PlaylistRenamed(QNetworkReply* reply,
+                                         int playlist_id,
+                                         const QString& new_name) {
   reply->deleteLater();
+  QVariantMap result = ExtractResult(reply);
+  if (!result["success"].toBool()) {
+    qLog(Warning) << "Grooveshark renamePlaylist failed";
+    return;
+  }
+  if (!playlists_.contains(playlist_id)) {
+    return;
+  }
+  PlaylistInfo& playlist_info = playlists_[playlist_id];
+  playlist_info.name_ = new_name;
+  playlist_info.item_->setText(new_name);
+}
+
+void GroovesharkService::AddUserFavoriteSong(int song_id) {
+  int task_id = model()->task_manager()->StartTask(tr("Adding song to favorites"));
+  QList<Param> parameters;
+  parameters << Param("songID", song_id);
+  QNetworkReply* reply = CreateRequest("addUserFavoriteSong", parameters);
+  NewClosure(reply, SIGNAL(finished()),
+             this, SLOT(UserFavoriteSongAdded(QNetworkReply*, int)),
+             reply, task_id);
+}
+
+void GroovesharkService::UserFavoriteSongAdded(QNetworkReply* reply, int task_id) {
+  reply->deleteLater();
+  model()->task_manager()->SetTaskFinished(task_id);
 
   QVariantMap result = ExtractResult(reply);
   if (!result["success"].toBool()) {
@@ -987,14 +1308,16 @@ void GroovesharkService::RemoveCurrentFromFavorites() {
 }
 
 void GroovesharkService::RemoveFromFavorites(int song_id) {
+  int task_id = model()->task_manager()->StartTask(tr("Removing song from favorites"));
   QList<Param> parameters;
   parameters << Param("songIDs", QVariantList() << QVariant(song_id));
-  QNetworkReply* reply = CreateRequest("removeUserFavoriteSongs", parameters, true);
+  QNetworkReply* reply = CreateRequest("removeUserFavoriteSongs", parameters);
   NewClosure(reply, SIGNAL(finished()), this,
-    SLOT(SongRemovedFromFavorites(QNetworkReply*)), reply);
+    SLOT(SongRemovedFromFavorites(QNetworkReply*, int)), reply, task_id);
 }
 
-void GroovesharkService::SongRemovedFromFavorites(QNetworkReply* reply) {
+void GroovesharkService::SongRemovedFromFavorites(QNetworkReply* reply, int task_id) {
+  model()->task_manager()->SetTaskFinished(task_id);
   reply->deleteLater();
 
   QVariantMap result = ExtractResult(reply);
@@ -1006,19 +1329,20 @@ void GroovesharkService::SongRemovedFromFavorites(QNetworkReply* reply) {
 }
 
 QNetworkReply* GroovesharkService::CreateRequest(const QString& method_name, QList<Param> params,
-                                                 bool need_authentication,
                                                  bool use_https) {
   QVariantMap request_params;
   request_params.insert("method", method_name);
 
   QVariantMap header;
   header.insert("wsKey", kApiKey);
-  if (need_authentication) {
-    if (session_id_.isEmpty()) {
+  if (session_id_.isEmpty()) {
+    if (method_name != "startSession") {
+      // It's normal to not have a session_id when calling startSession.
+      // Otherwise it's not, so print a warning message
       qLog(Warning) << "Session ID is empty: will not be added to query";
-    } else {
-      header.insert("sessionID", session_id_);
     }
+  } else {
+    header.insert("sessionID", session_id_);
   }
   request_params.insert("header", header);
 
@@ -1042,6 +1366,21 @@ QNetworkReply* GroovesharkService::CreateRequest(const QString& method_name, QLi
   QNetworkReply *reply = network_->post(req, post_params);
 
   return reply;
+}
+
+bool GroovesharkService::WaitForReply(QNetworkReply* reply) {
+  QEventLoop event_loop;
+  QTimer timeout_timer;
+  connect(&timeout_timer, SIGNAL(timeout()), &event_loop, SLOT(quit()));
+  connect(reply, SIGNAL(finished()), &event_loop, SLOT(quit()));
+  timeout_timer.start(10000);
+  event_loop.exec();
+  if (!timeout_timer.isActive()) {
+    qLog(Error) << "Grooveshark request timeout";
+    return false;
+  }
+  timeout_timer.stop();
+  return true;
 }
 
 QVariantMap GroovesharkService::ExtractResult(QNetworkReply* reply) {
@@ -1074,10 +1413,19 @@ SongList GroovesharkService::ExtractSongs(const QVariantMap& result) {
   SongList songs;
   for (int i=0; i<result_songs.size(); ++i) {
     QVariantMap result_song = result_songs[i].toMap();
-    Song song;
+    songs << ExtractSong(result_song);
+  }
+  return songs;
+}
+
+Song GroovesharkService::ExtractSong(const QVariantMap& result_song) {
+  Song song;
+  if (!result_song.isEmpty()) {
     int song_id = result_song["SongID"].toInt();
     QString song_name = result_song["SongName"].toString();
+    int artist_id = result_song["ArtistID"].toInt();
     QString artist_name = result_song["ArtistName"].toString();
+    int album_id = result_song["AlbumID"].toInt();
     QString album_name = result_song["AlbumName"].toString();
     QString cover = result_song["CoverArtFilename"].toString();
     song.Init(song_name, artist_name, album_name, 0);
@@ -1085,10 +1433,10 @@ SongList GroovesharkService::ExtractSongs(const QVariantMap& result) {
     // Special kind of URL: because we need to request a stream key for each
     // play, we generate a fake URL for now, and we will create a real streaming
     // URL when user will actually play the song (through url handler)
-    song.set_url(QString("grooveshark://%1").arg(song_id));
-    songs << song;
+    // URL is grooveshark://artist_id/album_id/song_id
+    song.set_url(QString("grooveshark://%1/%2/%3").arg(artist_id).arg(album_id).arg(song_id));
   }
-  return songs;
+  return song;
 }
 
 QList<int> GroovesharkService::ExtractSongsIds(const QVariantMap& result) {
@@ -1115,7 +1463,10 @@ QList<int> GroovesharkService::ExtractSongsIds(const QList<QUrl>& urls) {
 
 int GroovesharkService::ExtractSongId(const QUrl& url) {
   if (url.scheme() == "grooveshark") {
-    return url.authority().toInt();
+    QStringList ids = url.toString().remove("grooveshark://").split("/");
+    if (ids.size() == 3)
+      // Returns the third id: song id
+      return ids[2].toInt();
   }
   return 0;
 }

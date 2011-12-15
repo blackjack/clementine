@@ -8,6 +8,7 @@
 #include "core/logging.h"
 #include "core/player.h"
 #include "core/taskmanager.h"
+#include "core/timeconstants.h"
 #include "core/utilities.h"
 #include "globalsearch/globalsearch.h"
 #include "globalsearch/spotifysearchprovider.h"
@@ -47,7 +48,10 @@ SpotifyService::SpotifyService(InternetModel* parent)
       pending_search_playlist_(NULL),
       context_menu_(NULL),
       search_delay_(new QTimer(this)),
-      login_state_(LoginState_OtherError) {
+      login_state_(LoginState_OtherError),
+      bitrate_(spotify_pb::Bitrate320k),
+      volume_normalisation_(false)
+{
   // Build the search path for the binary blob.
   // Look for one distributed alongside clementine first, then check in the
   // user's home directory for any that have been downloaded.
@@ -69,7 +73,7 @@ SpotifyService::SpotifyService(InternetModel* parent)
   model()->player()->playlists()->RegisterSpecialPlaylistType(
         new SpotifySearchPlaylistType(this));
 
-  model()->global_search()->AddProvider(new SpotifySearchProvider(this), false);
+  model()->global_search()->AddProvider(new SpotifySearchProvider(this));
 
   search_delay_->setInterval(kSearchDelayMsec);
   search_delay_->setSingleShot(true);
@@ -137,10 +141,9 @@ void SpotifyService::LoginCompleted(bool success, const QString& error,
     login_task_id_ = 0;
   }
 
-  login_state_ = LoginState_LoggedIn;
-
   if (!success) {
-    QMessageBox::warning(NULL, tr("Spotify login error"), error, QMessageBox::Close);
+    bool show_error_dialog = true;
+    QString error_copy(error);
 
     switch (error_code) {
     case spotify_pb::LoginResponse_Error_BadUsernameOrPassword:
@@ -155,9 +158,28 @@ void SpotifyService::LoginCompleted(bool success, const QString& error,
       login_state_ = LoginState_NoPremium;
       break;
 
+    case spotify_pb::LoginResponse_Error_ReloginFailed:
+      if (login_state_ == LoginState_LoggedIn) {
+        // This is the first time the relogin has failed - show a message this
+        // time only.
+        error_copy = tr("You have been logged out of Spotify, please re-enter your password in the Settings dialog.");
+      } else {
+        show_error_dialog = false;
+      }
+
+      login_state_ = LoginState_ReloginFailed;
+      break;
+
     default:
       login_state_ = LoginState_OtherError;
+      break;
     }
+
+    if (show_error_dialog) {
+      QMessageBox::warning(NULL, tr("Spotify login error"), error_copy, QMessageBox::Close);
+    }
+  } else {
+    login_state_ = LoginState_LoggedIn;
   }
 
   QSettings s;
@@ -182,6 +204,13 @@ void SpotifyService::ReloadSettings() {
   s.beginGroup(kSettingsGroup);
 
   login_state_ = LoginState(s.value("login_state", LoginState_OtherError).toInt());
+  bitrate_ = static_cast<spotify_pb::Bitrate>(
+        s.value("bitrate", spotify_pb::Bitrate320k).toInt());
+  volume_normalisation_ = s.value("volume_normalisation", false).toBool();
+
+  if (server_ && blob_process_) {
+    server_->SetPlaybackSettings(bitrate_, volume_normalisation_);
+  }
 }
 
 void SpotifyService::EnsureServerCreated(const QString& username,
@@ -208,7 +237,7 @@ void SpotifyService::EnsureServerCreated(const QString& username,
   connect(server_, SIGNAL(SearchResults(spotify_pb::SearchResponse)),
           SLOT(SearchResults(spotify_pb::SearchResponse)));
   connect(server_, SIGNAL(ImageLoaded(QString,QImage)),
-          SLOT(ImageLoaded(QString,QImage)));
+          SIGNAL(ImageLoaded(QString,QImage)));
   connect(server_, SIGNAL(SyncPlaylistProgress(spotify_pb::SyncPlaylistProgress)),
           SLOT(SyncPlaylistProgress(spotify_pb::SyncPlaylistProgress)));
 
@@ -216,14 +245,18 @@ void SpotifyService::EnsureServerCreated(const QString& username,
 
   login_task_id_ = model()->task_manager()->StartTask(tr("Connecting to Spotify"));
 
+  QString login_username = username;
+  QString login_password = password;
+
   if (username.isEmpty()) {
     QSettings s;
     s.beginGroup(kSettingsGroup);
 
-    server_->Login(s.value("username").toString(), s.value("password").toString());
-  } else {
-    server_->Login(username, password);
+    login_username = s.value("username").toString();
+    login_password = QString();
   }
+
+  server_->Login(login_username, login_password, bitrate_, volume_normalisation_);
 
   StartBlobProcess();
 }
@@ -349,7 +382,7 @@ void SpotifyService::PlaylistsUpdated(const spotify_pb::Playlists& response) {
   }
 }
 
-bool SpotifyService::DoPlaylistsDiffer(const spotify_pb::Playlists& response) {
+bool SpotifyService::DoPlaylistsDiffer(const spotify_pb::Playlists& response) const {
   if (playlists_.count() != response.playlist_size()) {
     return true;
   }
@@ -442,7 +475,7 @@ void SpotifyService::SongFromProtobuf(const spotify_pb::Track& track, Song* song
 }
 
 PlaylistItem::Options SpotifyService::playlistitem_options() const {
-  return PlaylistItem::PauseDisabled;
+  return PlaylistItem::PauseDisabled | PlaylistItem::SeekDisabled;
 }
 
 void SpotifyService::EnsureMenuCreated() {
@@ -578,23 +611,9 @@ void SpotifyService::ItemDoubleClicked(QStandardItem* item) {
   }
 }
 
-void SpotifyService::LoadImage(const QUrl& url) {
-  if (url.scheme() != "spotify" || url.host() != "image") {
-    return;
-  }
-
-  QString image_id = url.path();
-  if (image_id.startsWith('/')) {
-    image_id.remove(0, 1);
-  }
-
+void SpotifyService::LoadImage(const QString& id) {
   EnsureServerCreated();
-  server_->LoadImage(image_id);
-}
-
-void SpotifyService::ImageLoaded(const QString& id, const QImage& image) {
-  qLog(Debug) << "Image loaded:" << id;
-  emit ImageLoaded(QUrl("spotify://image/" + id), image);
+  server_->LoadImage(id);
 }
 
 void SpotifyService::SyncPlaylistProgress(

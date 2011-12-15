@@ -18,10 +18,18 @@
 #include <limits>
 
 #include "bufferconsumer.h"
+#include "config.h"
 #include "gstelementdeleter.h"
 #include "gstengine.h"
 #include "gstenginepipeline.h"
 #include "core/logging.h"
+#include "core/utilities.h"
+#include "internet/internetmodel.h"
+
+#ifdef HAVE_SPOTIFY
+#  include "internet/spotifyserver.h"
+#  include "internet/spotifyservice.h"
+#endif
 
 #include <QtConcurrentRun>
 
@@ -121,14 +129,48 @@ bool GstEnginePipeline::ReplaceDecodeBin(GstElement* new_bin) {
 }
 
 bool GstEnginePipeline::ReplaceDecodeBin(const QUrl& url) {
-  GstElement* new_bin = engine_->CreateElement("uridecodebin");
-  g_object_set(G_OBJECT(new_bin), "uri", url.toEncoded().constData(), NULL);
-  g_object_set(G_OBJECT(new_bin), "buffer-duration", buffer_duration_nanosec_, NULL);
-  g_object_set(G_OBJECT(new_bin), "download", true, NULL);
-  g_object_set(G_OBJECT(new_bin), "use-buffering", true, NULL);
-  g_signal_connect(G_OBJECT(new_bin), "drained", G_CALLBACK(SourceDrainedCallback), this);
-  g_signal_connect(G_OBJECT(new_bin), "pad-added", G_CALLBACK(NewPadCallback), this);
-  g_signal_connect(G_OBJECT(new_bin), "notify::source", G_CALLBACK(SourceSetupCallback), this);
+  GstElement* new_bin = NULL;
+
+  if (url.scheme() == "spotify") {
+    #ifdef HAVE_SPOTIFY
+      new_bin = gst_bin_new("spotify_bin");
+
+      // Create elements
+      GstElement* src = engine_->CreateElement("tcpserversrc", new_bin);
+      GstElement* gdp = engine_->CreateElement("gdpdepay", new_bin);
+      if (!src || !gdp)
+        return false;
+
+      // Pick a port number
+      const int port = Utilities::PickUnusedPort();
+      g_object_set(G_OBJECT(src), "host", "127.0.0.1", NULL);
+      g_object_set(G_OBJECT(src), "port", port, NULL);
+
+      // Link the elements
+      gst_element_link(src, gdp);
+
+      // Add a ghost pad
+      GstPad* pad = gst_element_get_static_pad(gdp, "src");
+      gst_element_add_pad(GST_ELEMENT(new_bin), gst_ghost_pad_new("src", pad));
+      gst_object_unref(GST_OBJECT(pad));
+
+      // Tell spotify to start sending data to us.
+      InternetModel::Service<SpotifyService>()->server()->StartPlaybackLater(url.toString(), port);
+    #else // HAVE_SPOTIFY
+      qLog(Error) << "Tried to play a spotify:// url, but spotify support is not compiled in";
+      return false;
+    #endif
+  } else {
+    new_bin = engine_->CreateElement("uridecodebin");
+    g_object_set(G_OBJECT(new_bin), "uri", url.toEncoded().constData(), NULL);
+    g_object_set(G_OBJECT(new_bin), "buffer-duration", buffer_duration_nanosec_, NULL);
+    g_object_set(G_OBJECT(new_bin), "download", true, NULL);
+    g_object_set(G_OBJECT(new_bin), "use-buffering", true, NULL);
+    g_signal_connect(G_OBJECT(new_bin), "drained", G_CALLBACK(SourceDrainedCallback), this);
+    g_signal_connect(G_OBJECT(new_bin), "pad-added", G_CALLBACK(NewPadCallback), this);
+    g_signal_connect(G_OBJECT(new_bin), "notify::source", G_CALLBACK(SourceSetupCallback), this);
+  }
+
   return ReplaceDecodeBin(new_bin);
 }
 
@@ -304,7 +346,22 @@ bool GstEnginePipeline::Init() {
   gst_pad_add_buffer_probe(gst_element_get_pad(probe_converter, "src"), G_CALLBACK(HandoffCallback), this);
   gst_bus_set_sync_handler(gst_pipeline_get_bus(GST_PIPELINE(pipeline_)), BusCallbackSync, this);
   bus_cb_id_ = gst_bus_add_watch(gst_pipeline_get_bus(GST_PIPELINE(pipeline_)), BusCallback, this);
+
+  MaybeLinkDecodeToAudio();
+
   return true;
+}
+
+void GstEnginePipeline::MaybeLinkDecodeToAudio() {
+  if (!uridecodebin_ || !audiobin_)
+    return;
+
+  GstPad* pad = gst_element_get_static_pad(uridecodebin_, "src");
+  if (!pad)
+    return;
+
+  gst_object_unref(pad);
+  gst_element_link(uridecodebin_, audiobin_);
 }
 
 bool GstEnginePipeline::InitFromString(const QString& pipeline) {
@@ -640,6 +697,7 @@ void GstEnginePipeline::TransitionToNext() {
 
   ReplaceDecodeBin(next_url_);
   gst_element_set_state(uridecodebin_, GST_STATE_PLAYING);
+  MaybeLinkDecodeToAudio();
 
   url_ = next_url_;
   end_offset_nanosec_ = next_end_offset_nanosec_;

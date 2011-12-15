@@ -26,6 +26,7 @@
 
 
 class AlbumCoverLoader;
+class UrlSearchProvider;
 
 class GlobalSearch : public QObject {
   Q_OBJECT
@@ -37,7 +38,7 @@ public:
   static const char* kSettingsGroup;
   static const int kMaxResultsPerEmission;
 
-  void AddProvider(SearchProvider* provider, bool enable_by_default = true);
+  void AddProvider(SearchProvider* provider);
   // Try to change provider state. Returns false if we can't (e.g. we can't
   // enable a provider because it requires the user to be logged-in)
   bool SetProviderEnabled(const SearchProvider* provider, bool enabled);
@@ -52,8 +53,10 @@ public:
 
   bool FindCachedPixmap(const SearchProvider::Result& result, QPixmap* pixmap) const;
 
+  // "enabled" is the user preference.  "usable" is enabled AND logged in.
   QList<SearchProvider*> providers() const;
   bool is_provider_enabled(const SearchProvider* provider) const;
+  bool is_provider_usable(SearchProvider* provider) const;
 
   static bool HideOtherSearchBoxes();
 
@@ -71,7 +74,6 @@ signals:
 
   void ProviderAdded(const SearchProvider* provider);
   void ProviderRemoved(const SearchProvider* provider);
-  void ProviderToggled(const SearchProvider* provider, bool enabled);
 
 protected:
   void timerEvent(QTimerEvent* e);
@@ -86,6 +88,7 @@ private slots:
   void ProviderDestroyedSlot(QObject* object);
 
 private:
+  void ConnectProvider(SearchProvider* provider);
   void HandleLoadedArt(int id, const QImage& image, SearchProvider* provider);
   void TakeNextQueuedArt(SearchProvider* provider);
   QString PixmapCacheKey(const SearchProvider::Result& result) const;
@@ -119,11 +122,12 @@ private:
   QPixmapCache pixmap_cache_;
   QMap<int, QString> pending_art_searches_;
 
-  QMap<QString, bool> providers_state_preference_;
-
   // Used for providers with ArtIsInSongMetadata set.
   BackgroundThread<AlbumCoverLoader>* cover_loader_;
   QMap<quint64, int> cover_loader_tasks_;
+
+  // Special search provider that's used for queries that look like URLs
+  UrlSearchProvider* url_provider_;
 };
 
 #endif // GLOBALSEARCH_H

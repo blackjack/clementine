@@ -88,7 +88,7 @@ void Player::HandleLoadResult(const UrlHandler::LoadResult& result) {
                 << "said no more tracks";
 
     loading_async_ = QUrl();
-    NextItem(Engine::Auto);
+    NextItem(stream_change_type_);
     break;
 
   case UrlHandler::LoadResult::TrackAvailable: {
@@ -158,7 +158,10 @@ void Player::NextInternal(Engine::TrackChangeFlags change) {
 }
 
 void Player::NextItem(Engine::TrackChangeFlags change) {
-  int i = playlists_->active()->next_row();
+  // Manual track changes override "Repeat track"
+  const bool ignore_repeat_track = change & Engine::Manual;
+
+  int i = playlists_->active()->next_row(ignore_repeat_track);
   if (i == -1) {
     playlists_->active()->set_current_row(i);
     emit PlaylistFinished();
@@ -298,6 +301,11 @@ void Player::PlayAt(int index, Engine::TrackChangeFlags change, bool reshuffle) 
   if (reshuffle)
     playlists_->active()->set_current_row(-1);
   playlists_->active()->set_current_row(index);
+
+  if (playlists()->active()->current_row() == -1) {
+    // Maybe index didn't exist in the playlist.
+    return;
+  }
 
   current_item_ = playlists_->active()->current_item();
   const QUrl url = current_item_->Url();

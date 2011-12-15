@@ -35,7 +35,8 @@ public:
   SpotifyServer(QObject* parent = 0);
 
   void Init();
-  void Login(const QString& username, const QString& password);
+  void Login(const QString& username, const QString& password,
+             spotify_pb::Bitrate bitrate, bool volume_normalisation);
 
   void LoadStarred();
   void SyncStarred();
@@ -43,14 +44,16 @@ public:
   void SyncInbox();
   void LoadUserPlaylist(int index);
   void SyncUserPlaylist(int index);
-  void StartPlayback(const QString& uri, quint16 port);
+  void StartPlaybackLater(const QString& uri, quint16 port);
   void Search(const QString& text, int limit, int limit_album = 0);
   void LoadImage(const QString& id);
   void AlbumBrowse(const QString& uri);
+  void SetPlaybackSettings(spotify_pb::Bitrate bitrate, bool volume_normalisation);
 
   int server_port() const;
 
 public slots:
+  void StartPlayback(const QString& uri, quint16 port);
   void Seek(qint64 offset_bytes);
 
 signals:

@@ -165,7 +165,7 @@ class Playlist : public QAbstractListModel {
 
   int current_row() const;
   int last_played_row() const;
-  int next_row() const;
+  int next_row(bool ignore_repeat_track = false) const;
   int previous_row() const;
 
   const QModelIndex current_index() const;
@@ -195,12 +195,6 @@ class Playlist : public QAbstractListModel {
 
   QUndoStack* undo_stack() const { return undo_stack_; }
 
-  ColumnAlignmentMap column_alignments() const { return column_alignments_; }
-  void set_column_alignments(const ColumnAlignmentMap& column_alignments);
-  void set_column_align_left(int column);
-  void set_column_align_center(int column);
-  void set_column_align_right(int column);
-
   // Scrobbling
   qint64 scrobble_point_nanosec() const { return scrobble_point_; }
   LastFMStatus get_lastfm_status() const { return lastfm_status_; }
@@ -219,7 +213,6 @@ class Playlist : public QAbstractListModel {
                                  const SongList& songs,             int pos = -1, bool play_now = false, bool enqueue = false);
   // Removes items with given indices from the playlist. This operation is not undoable.
   void RemoveItemsWithoutUndo   (const QList<int>& indices);
-  void UpdateItems              (const SongList& songs);
 
   // If this playlist contains the current item, this method will apply the "valid" flag on it.
   // If the "valid" flag is false, the song will be greyed out. Otherwise the grey color will
@@ -271,6 +264,7 @@ class Playlist : public QAbstractListModel {
   void ClearStreamMetadata();
   void SetStreamMetadata(const QUrl& url, const Song& song);
   void ItemChanged(PlaylistItemPtr item);
+  void UpdateItems(const SongList& songs);
 
   void Clear();
   void Shuffle();
@@ -280,6 +274,8 @@ class Playlist : public QAbstractListModel {
   void ExpandDynamicPlaylist();
   void RepopulateDynamicPlaylist();
   void TurnOffDynamicPlaylist();
+
+  void SetColumnAlignment(const ColumnAlignmentMap& alignment);
 
  signals:
   void RestoreFinished();
@@ -298,7 +294,7 @@ class Playlist : public QAbstractListModel {
   void SetCurrentIsPaused(bool paused);
   void UpdateScrobblePoint();
   void ReshuffleIndices();
-  int NextVirtualIndex(int i) const;
+  int NextVirtualIndex(int i, bool ignore_repeat_track) const;
   int PreviousVirtualIndex(int i) const;
   bool FilterContainsVirtualIndex(int i) const;
   void TurnOnDynamicPlaylist(smart_playlists::GeneratorPtr gen);
