@@ -19,19 +19,40 @@
 #define VKONTAKTESERVICE_H
 
 #include "internetservice.h"
+#include "internetmodel.h"
+#include "core/backgroundthread.h"
 
-class QNetworkAccessManager;
+class ThrottledNetworkManager;
 class QMenu;
 class Playlist;
 class QDomElement;
 class Song;
+class NetworkReply;
+class VkontakteApiWorker;
+class VkontakteSearchWorker;
+class VkontakteWorker;
+
+typedef BackgroundThreadImplementation<VkontakteApiWorker,VkontakteApiWorker> BgApiWorker;
+typedef BackgroundThreadImplementation<VkontakteSearchWorker,VkontakteSearchWorker> BgSearchWorker;
+typedef BackgroundThreadImplementation<VkontakteWorker,VkontakteWorker> BgWorker;
 
 class VkontakteService : public InternetService {
   Q_OBJECT
 
 public:
-  VkontakteService(InternetModel* parent);
-  ~VkontakteService();
+
+  enum Role {
+    Role_AlbumID = InternetModel::RoleCount+1,
+    Role_UserID,
+  };
+  enum Type {
+    Type_MyTracks = InternetModel::TypeCount+1,
+    Type_Friends,
+    Type_Friend,
+    Type_Album,
+    Type_Song,
+    Type_Search,
+  };
 
   static const char* kServiceName;
   static const char* kSettingsGroup;
@@ -39,25 +60,27 @@ public:
   static const char* kApplicationId;
   static const int kMaxAlbumsPerRequest;
   static const int kMaxSearchResults;
+  static const int kMaxRequestsPerSecond;
   static const int kSearchDelayMsec;
+  static const char* kCommentInfoRegexp;
 
+
+  VkontakteService(InternetModel* parent);
+  ~VkontakteService();
 
   QStandardItem* CreateRootItem();
   void LazyPopulate(QStandardItem* item);
   void ShowContextMenu(const QModelIndex& index, const QPoint& global_pos);
   void ItemDoubleClicked(QStandardItem* item);
   QList<QAction*> playlistitem_actions(const Song& song);
-
-//  PlaylistItem::Options playlistitem_options() const;
+  void DropMimeData(const QMimeData* data, const QModelIndex& index);
   void ReloadSettings();
 
   void Search(const QString& text, Playlist* playlist, bool now = false);
-  void GetFullNameAsync(const QString& user_id);
+  void GetFullNameAsync(const QString& user_id, const QString& access_token);
 signals:
-  void FullNameReceived(const QString& user_id, const QString& full_name);
-public slots:
-  void AddToMyTracks();
-  void RemoveFromMyTracks();
+  void FullNameReceived(const QString& full_name);
+
 protected:
   QModelIndex GetCurrentIndex();
 
@@ -65,50 +88,55 @@ private slots:
   void Homepage();
   void ShowConfig();
   void ReloadItems();
-  void PopulateTracksForUserFinished(QStandardItem* item, QNetworkReply* reply);
-  void PopulateFriendsFinished(QStandardItem* item, QNetworkReply* reply);
-  void GetAlbumsFinished(const QString& user_id, QStandardItem *item, QNetworkReply *reply);
-  void GetFullNameFinished(const QString& user_id, QNetworkReply* reply);
-  void MyTracksChanged(QNetworkReply* reply);
-  void DoSearch();
-  void SearchFinished(QNetworkReply* reply);
-
-private:
-  void PopulateTracksForUserAsync(const QString& user_id, QStandardItem* root);
-  void PopulateFriendsAsync(const QString& user_id, QStandardItem* root);
-  void GetAlbumsAsync(const QString& user_id, QStandardItem* root);
-  void SearchAsync(const QString& text, int offset = 0);
-
   void Relogin();
-  void HandleApiError(int error);
-  Song ParseSong(QDomElement info);
-private:
-//  VkontakteUrlHandler* url_handler_;
+  void Log(QString error);
 
+  void CreateAlbum();
+  void RenameAlbum();
+  void DeleteAlbum();
+
+  void AddToMyTracks();
+  void RemoveFromMyTracks();
+
+  void SearchResultsGot(const SongList& songs);
+  void PlaylistDestroyed(QObject* object);
+  void SearchWorkerFinished();
+
+  void RepopulateMyTracks();
+
+  void InsertFriendItems(const QList<QStringList>& list_of_user_full_name);
+  void InsertAlbumItems(const QList<QStringList>& list_of_owner_album_title);
+  void InsertTrackItems(const SongList& songs);
+private:
+  QStandardItem* FindChild(QStandardItem* parent, const QString& text);
+
+private:
   QStandardItem* root_;
   QStandardItem* my_tracks_;
   QStandardItem* friends_;
   QStandardItem* search_;
   QMenu* context_menu_;
-  QAction* add_to_my_tracks_;
-  QAction* remove_from_my_tracks_;
 
+  QAction* create_album_;
+  QAction* delete_album_;
+  QAction* rename_album_;
+  QAction* add_to_my_tracks_model_;
+  QAction* remove_from_my_tracks_model_;
+  QAction* add_to_my_tracks_playlist_;
+  QList<QUrl> urls_to_add_;
+  QList<QUrl> urls_to_remove_;
+
+  QMap<Playlist*,BgSearchWorker*> search_workers_;
   QList<QAction*> playlistitem_actions_;
   QStandardItem* context_item_;
   Song context_song_;
-
-  QMap<QString,QString> albums_;
 
   QString access_token_;
   QDateTime expire_date_;
   QString user_id_;
   bool logged_in_;
 
-  QTimer* search_delay_;
-  QString pending_search_;
-  Playlist* pending_search_playlist_;
-
-  QNetworkAccessManager* network_;
+  ThrottledNetworkManager* network_;
 };
 
 #endif // VKONTAKTESERVICE_H

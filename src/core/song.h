@@ -169,7 +169,6 @@ class Song {
   bool is_valid() const { return d->valid_; }
   bool is_unavailable() const { return d->unavailable_; }
   int id() const { return d->id_; }
-  int owner_id() const { return d->owner_id_; }
 
   const QString& title() const { return d->title_; }
   const QString& album() const { return d->album_; }
@@ -244,7 +243,6 @@ class Song {
   QFuture<bool> BackgroundSave() const;
 
   void set_id(int id) { d->id_ = id; }
-  void set_owner_id(int id) { d->owner_id_ = id; }
   void set_valid(bool v) { d->valid_ = v; }
   void set_title(const QString& v) { d->title_ = v; }
 
@@ -309,7 +307,6 @@ class Song {
 
     bool valid_;
     int id_;
-    int owner_id_;
 
     QString title_;
     QString album_;

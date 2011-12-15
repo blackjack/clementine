@@ -90,6 +90,7 @@ set(SOURCES
   core/taskmanager.cpp
   core/urlhandler.cpp
   core/utilities.cpp
+  core/throttlednetworkmanager.cpp
 
   covers/albumcoverfetcher.cpp
   covers/albumcoverfetchersearch.cpp
@@ -165,6 +166,7 @@ set(SOURCES
   internet/somafmurlhandler.cpp
   internet/vkontaktesettingspage.cpp
   internet/vkontakteservice.cpp
+  internet/vkontakteworker.cpp
   internet/vkontaktesearchplaylisttype.cpp
 
   library/groupbydialog.cpp
@@ -349,6 +351,7 @@ set(HEADERS
   core/songloader.h
   core/taskmanager.h
   core/urlhandler.h
+  core/throttlednetworkmanager.h
 
   covers/albumcoverfetcher.h
   covers/albumcoverfetchersearch.h
@@ -412,6 +415,7 @@ set(HEADERS
   internet/somafmurlhandler.h
   internet/vkontaktesettingspage.h
   internet/vkontakteservice.h
+  internet/vkontakteworker.h
   internet/vkontaktesearchplaylisttype.h
 
   library/groupbydialog.h

@@ -17,24 +17,33 @@
 
 #include "vkontakteservice.h"
 #include "internetmodel.h"
+#include "internetview.h"
+#include "playlist/playlistview.h"
 #include "core/closure.h"
 #include "core/logging.h"
 #include "core/network.h"
 #include "core/player.h"
+#include "core/throttlednetworkmanager.h"
 #include "playlist/playlistmanager.h"
 #include "core/taskmanager.h"
 #include "playlist/playlist.h"
 #include "ui/iconloader.h"
 #include "vkontaktesearchplaylisttype.h"
+#include "vkontakteworker.h"
 
-#include <QCoreApplication>
+#include <QApplication>
+#include <QInputDialog>
+#include <QMessageBox>
 #include <QDesktopServices>
 #include <QMenu>
 #include <QNetworkRequest>
 #include <QNetworkReply>
 #include <QDomElement>
 #include <QTimer>
+#include <QMimeData>
+#include <QMetaType>
 #include <QtDebug>
+
 
 const char* VkontakteService::kServiceName = "Vkontakte";
 const char* VkontakteService::kSettingsGroup = "Vkontakte";
@@ -42,28 +51,31 @@ const char* VkontakteService::kHomepage = "http://vkontakte.ru";
 const char* VkontakteService::kApplicationId = "2677518";
 const int VkontakteService::kMaxSearchResults = 200;
 const int VkontakteService::kMaxAlbumsPerRequest = 100;
+const int VkontakteService::kMaxRequestsPerSecond = 3;
 const int VkontakteService::kSearchDelayMsec = 400;
+const char* VkontakteService::kCommentInfoRegexp = "song_id\\=(.*)\\|owner_id\\=(.*)\\|album_id\\=(.*)";
+
 
 VkontakteService::VkontakteService(InternetModel* parent)
   : InternetService(kServiceName, parent, parent),
     root_(NULL),
     context_menu_(NULL),
     logged_in_(false),
-    search_delay_(new QTimer(this)),
-    network_(new NetworkAccessManager(this))
+    network_(new ThrottledNetworkManager(kMaxRequestsPerSecond,this))
 {
+
+  qRegisterMetaType< QList<QStringList> >("QList<QStringList>");
 
   model()->player()->playlists()->RegisterSpecialPlaylistType(
         new VkontakteSearchPlaylistType(this));
 
-  search_delay_->setInterval(kSearchDelayMsec);
-  search_delay_->setSingleShot(true);
-  connect(search_delay_, SIGNAL(timeout()), SLOT(DoSearch()));
+  add_to_my_tracks_playlist_ = new QAction(QIcon(":/providers/vkontakte.png"),tr("Add to my tracks"), this);
+  connect(add_to_my_tracks_playlist_,SIGNAL(triggered()),SLOT(AddToMyTracks()));
 
-  add_to_my_tracks_ = new QAction(IconLoader::Load("list-add"), tr("Add to my tracks"), this);
-  connect(add_to_my_tracks_,SIGNAL(triggered()),SLOT(AddToMyTracks()));
-  remove_from_my_tracks_ = new QAction(IconLoader::Load("list-remove"), tr("Remove from tracks"), this);
-  connect(remove_from_my_tracks_,SIGNAL(triggered()),SLOT(RemoveFromMyTracks()));
+  QAction* separator = new QAction(this);
+  separator->setSeparator(true);
+  playlistitem_actions_ << separator << add_to_my_tracks_playlist_ << separator;
+
 }
 
 VkontakteService::~VkontakteService() {
@@ -72,16 +84,23 @@ VkontakteService::~VkontakteService() {
 
 QStandardItem* VkontakteService::CreateRootItem() {
   root_ = new QStandardItem(QIcon(":/providers/vkontakte.png"), kServiceName);
-  root_->setData(false, InternetModel::Role_CanLazyLoad);
+  root_->setData(false, InternetModel::Role_CanLazyLoad);  
+
   my_tracks_ = new QStandardItem(QIcon(":last.fm/personal_radio.png"),tr("My own tracks"));
   my_tracks_->setData(true, InternetModel::Role_CanLazyLoad);
+  my_tracks_->setFlags(my_tracks_->flags() | Qt::ItemIsEditable | Qt::ItemIsDropEnabled);
+  my_tracks_->setData(true, InternetModel::Role_CanBeModified);
+  my_tracks_->setData(Type_MyTracks,InternetModel::Role_Type);
+
   friends_ = new QStandardItem(QIcon(":last.fm/neighbour_radio.png"),tr("My friends' tracks"));
   friends_->setData(true, InternetModel::Role_CanLazyLoad);
+  friends_->setData(Type_Friends,InternetModel::Role_Type);
 
   search_ = new QStandardItem(IconLoader::Load("edit-find"),
                               tr("Search Vkontakte (opens a new tab)"));
   search_->setData(InternetModel::PlayBehaviour_DoubleClickAction,
                            InternetModel::Role_PlayBehaviour);
+  search_->setData(Type_Search,InternetModel::Role_Type);
 
   root_->appendRow(my_tracks_);
   root_->appendRow(friends_);
@@ -95,11 +114,30 @@ void VkontakteService::LazyPopulate(QStandardItem* item) {
     ShowConfig();
     return;
   }
-  item->appendRow(new QStandardItem(tr("Loading...")));
-  if (item == my_tracks_)
-    GetAlbumsAsync(user_id_,item);
-  else if (item == friends_)
-    PopulateFriendsAsync(user_id_,item);
+  if (item->hasChildren())
+    item->removeRows(0, item->rowCount());
+
+  VkontakteApiWorker* w = new VkontakteApiWorker(this);
+  w->SetAccessToken(access_token_);
+  w->SetNetwork(network_);
+
+  connect(w,SIGNAL(AuthError()),SLOT(Relogin()));
+  connect(w,SIGNAL(Error(QString)),SLOT(Log(QString)));
+  connect(w,SIGNAL(Error(QString)),w,SLOT(deleteLater()));
+
+  if (item == my_tracks_ || item->parent() == friends_) {
+    QString user_id = item == my_tracks_ ? user_id_ : item->data(Role_UserID).toString();
+    w->GetAlbumsAsync(user_id);
+    connect(w,SIGNAL(AlbumsGot(QList<QStringList>)),this,SLOT(InsertAlbumItems(QList<QStringList>)));
+    NewClosure(w,SIGNAL(AlbumsGot(QList<QStringList>)),w,SLOT(GetTracksAsync(QString)),user_id);
+    connect(w,SIGNAL(TracksGot(SongList)),SLOT(InsertTrackItems(SongList)));
+    connect(w,SIGNAL(TracksGot(SongList)),w,SLOT(deleteLater()));
+  }
+  else if (item == friends_) {
+    w->GetFriendsAsync(user_id_);
+    connect(w,SIGNAL(FriendsGot(QList<QStringList>)),this,SLOT(InsertFriendItems(QList<QStringList>)));
+    connect(w,SIGNAL(FriendsGot(QList<QStringList>)),w,SLOT(deleteLater()));
+  }
 }
 
 void VkontakteService::ReloadSettings() {
@@ -120,47 +158,96 @@ void VkontakteService::ShowContextMenu(const QModelIndex& index, const QPoint& g
   if (!context_menu_) {
     context_menu_ = new QMenu;
     context_menu_->addActions(GetPlaylistActions());
+    context_menu_->addSeparator();
+    add_to_my_tracks_model_= context_menu_->addAction(IconLoader::Load("list-add"),
+                                                      tr("Add to my tracks"),
+                                                      this, SLOT(AddToMyTracks()));
+    remove_from_my_tracks_model_ = context_menu_->addAction(IconLoader::Load("list-remove"),
+                                                            tr("Remove from my tracks"),
+                                                            this, SLOT(RemoveFromMyTracks()));
+    create_album_ = context_menu_->addAction(IconLoader::Load("document-new"),
+                                             tr("Create new album"),
+                                             this,SLOT(CreateAlbum()));
+    delete_album_ = context_menu_->addAction(IconLoader::Load("edit-delete"),
+                                             tr("Delete album"),
+                                             this,SLOT(DeleteAlbum()));
+    rename_album_ = context_menu_->addAction(IconLoader::Load("edit-rename"),
+                                             tr("Rename album"),
+                                             this,SLOT(RenameAlbum()));
+
+    context_menu_->addSeparator();
     context_menu_->addAction(IconLoader::Load("download"), tr("Open vkontakte.ru in browser"), this, SLOT(Homepage()));
     context_menu_->addAction(IconLoader::Load("view-refresh"), tr("Refresh catalogue"), this, SLOT(ReloadItems()));
     context_menu_->addAction(IconLoader::Load("configure"), tr("Configure Vkontakte"), this, SLOT(ShowConfig()));
-    context_menu_->insertAction(0,add_to_my_tracks_);
-    context_menu_->insertAction(0,remove_from_my_tracks_);
   }
-
-
   context_item_ = model()->itemFromIndex(index);
-  QVariant song_var = context_item_->data(InternetModel::Role_SongMetadata);
-  bool can_add = false, can_delete = false;
-  if (song_var.isValid()) {
-    context_song_ = song_var.value<Song>();
-    if (context_song_.id()>0 && context_song_.owner_id()>0) {
-      if (QString::number(context_song_.owner_id())==user_id_)
-        can_delete = true;
-      else
-        can_add = true;
+
+  QRegExp rx(kCommentInfoRegexp);
+
+  InternetView* view = qobject_cast<InternetView*>(qApp->widgetAt(global_pos)->parentWidget());
+  if (view) {
+    urls_to_add_.clear();
+    urls_to_remove_.clear();
+
+    foreach (QModelIndex i, view->selectionModel()->selectedIndexes()) {
+      QUrl url = i.data(InternetModel::Role_Url).toUrl();
+      if (!url.isValid())
+        continue;
+      if (url.hasFragment() &&
+          rx.indexIn(url.fragment()) >-1 ) {
+        QString owner_id = rx.cap(2);
+        if (owner_id==user_id_)
+          urls_to_remove_ << url;
+        else
+          urls_to_add_ << url;
+      }
     }
   }
-  add_to_my_tracks_->setVisible(can_add);
-  remove_from_my_tracks_->setVisible(can_delete);
+
+  add_to_my_tracks_model_->setVisible(!urls_to_add_.isEmpty());
+  remove_from_my_tracks_model_->setVisible(!urls_to_remove_.isEmpty());
+
+  create_album_->setVisible( context_item_ == my_tracks_ );
+  delete_album_->setVisible( context_item_->data(Role_AlbumID).isValid() );
+  rename_album_->setVisible( context_item_->data(Role_AlbumID).isValid() );
 
   context_menu_->popup(global_pos);
 }
 
 
 QList<QAction*> VkontakteService::playlistitem_actions(const Song& song) {
-  // Clear previous actions
-  playlistitem_actions_.clear();
 
-  if (song.id()>0 && song.owner_id()>0) {
-    context_song_ = song;
-    if (QString::number(context_song_.owner_id())==user_id_)
-      playlistitem_actions_.append(remove_from_my_tracks_);
-    else
-      playlistitem_actions_.append(add_to_my_tracks_);
-  }
+    urls_to_add_.clear();
+    QRegExp rx(kCommentInfoRegexp);
+    QUrl url = song.url();
+    if (url.isValid() && url.hasFragment() && rx.indexIn(url.fragment()) >-1 ) {
+      urls_to_add_ << url;
+      add_to_my_tracks_playlist_->setVisible(true);
+    }
+    else {
+      add_to_my_tracks_playlist_->setVisible(false);
+    }
 
-  return playlistitem_actions_;
+    return playlistitem_actions_;
 }
+
+
+void VkontakteService::GetFullNameAsync(const QString &user_id, const QString& access_token) {
+  BgApiWorker* worker = new BgApiWorker(this);
+  worker->Start(true);
+  VkontakteApiWorker* w = worker->Worker().get();
+  w->SetAccessToken(access_token);
+  w->SetNetwork(network_);
+
+  connect(w,SIGNAL(AuthError()),SLOT(Relogin()));
+  connect(w,SIGNAL(FullNameGot(QString)),SIGNAL(FullNameReceived(QString)));
+  connect(w,SIGNAL(FullNameGot(QString)),worker,SLOT(quit()));
+  connect(w,SIGNAL(Error(QString)),SLOT(Log(QString)));
+  connect(w,SIGNAL(Error(QString)),worker,SLOT(quit()));
+
+  w->GetFullNameAsync(user_id);
+}
+
 
 void VkontakteService::ReloadItems() {
   if (!logged_in_) {
@@ -179,201 +266,15 @@ void VkontakteService::ReloadItems() {
       if (!my_tracks_->data(InternetModel::Role_CanLazyLoad).toBool())
         LazyPopulate(my_tracks_);
       return;
+    } else if (item->parent() == friends_) {
+      if (!item->data(InternetModel::Role_CanLazyLoad).toBool())
+        LazyPopulate(item);
     }
+
     item = item->parent();
   }
 }
 
-void VkontakteService::PopulateTracksForUserAsync(const QString& user_id, QStandardItem *root) {
-  QUrl request("https://api.vkontakte.ru/method/audio.get.xml");
-  request.addQueryItem("uid",user_id);
-  request.addQueryItem("access_token",access_token_);
-
-  QNetworkReply* reply = network_->get(QNetworkRequest(request));
-
-  NewClosure(reply, SIGNAL(finished()),
-             this, SLOT(PopulateTracksForUserFinished(QStandardItem*,QNetworkReply*)),
-             root, reply);
-}
-
-void VkontakteService::PopulateTracksForUserFinished(QStandardItem* item,QNetworkReply* reply) {
-  reply->deleteLater();
-
-  if (reply->error() != QNetworkReply::NoError) {
-    qLog(Error) << reply->errorString();
-    return;
-  }
-
-  if (item->hasChildren())
-    item->removeRows(0, item->rowCount());
-
-  QDomDocument doc;
-  doc.setContent(reply);
-  QDomElement root = doc.documentElement();
-  if (root.tagName()=="response") {
-    QDomNodeList tracks = root.elementsByTagName("audio");
-    for(int i = 0; i< tracks.size(); ++i) {
-      Song song = ParseSong(tracks.at(i).firstChildElement());
-
-      QStandardItem* row = new QStandardItem(song.PrettyTitleWithArtist());
-      row->setData(QVariant::fromValue(song), InternetModel::Role_SongMetadata);
-      row->setData(InternetModel::PlayBehaviour_SingleItem, InternetModel::Role_PlayBehaviour);
-      item->appendRow(row);
-    }
-  } else if (root.tagName()=="error") {
-    QDomElement error_code = root.elementsByTagName("error_code").at(0).toElement();
-    HandleApiError(error_code.text().toInt());
-  }
-}
-
-void  VkontakteService::PopulateFriendsAsync(const QString& user_id, QStandardItem* root) {
-  QUrl request("https://api.vkontakte.ru/method/friends.get.xml");
-  request.addQueryItem("uid",user_id);
-  request.addQueryItem("fields","uid,first_name,last_name");
-  request.addQueryItem("access_token",access_token_);
-  QNetworkReply* reply = network_->get(QNetworkRequest(request));
-
-  NewClosure(reply, SIGNAL(finished()),
-             this, SLOT(PopulateFriendsFinished(QStandardItem*,QNetworkReply*)),
-             root, reply);
-}
-
-void VkontakteService::PopulateFriendsFinished(QStandardItem* item, QNetworkReply* reply) {
-  reply->deleteLater();
-
-  if (reply->error() != QNetworkReply::NoError) {
-    qLog(Error) << reply->errorString();
-    return;
-  }
-
-  if (item->hasChildren())
-    item->removeRows(0, item->rowCount());
-
-  QDomDocument doc;
-  doc.setContent(reply);
-  QDomElement root = doc.documentElement();
-  if (root.tagName()=="response") {
-    QDomNodeList tracks = root.elementsByTagName("user");
-    for(int i = 0; i< tracks.size(); ++i) {
-      QDomElement info = tracks.at(i).firstChildElement();
-      QString first_name, last_name, uid;
-      while (!info.isNull()) {
-        if (info.tagName() == "uid") {
-          uid = info.text();
-        } else if (info.tagName() == "first_name") {
-          first_name = info.text();
-        } else if (info.tagName() == "last_name") {
-          last_name = info.text();
-        }
-        info = info.nextSiblingElement();
-      }
-      QStandardItem* row = new QStandardItem(QIcon(":last.fm/icon_user.png"),first_name+" "+last_name);
-      item->appendRow(row);
-      GetAlbumsAsync(uid,row);
-    }
-
-  } else if (root.tagName()=="error") {
-    QDomElement error_code = root.elementsByTagName("error_code").at(0).toElement();
-    HandleApiError(error_code.text().toInt());
-  }
-}
-
-void VkontakteService::GetAlbumsAsync(const QString& user_id, QStandardItem* root) {
-  QUrl request("https://api.vkontakte.ru/method/audio.getAlbums.xml");
-  request.addQueryItem("uid",user_id);
-  request.addQueryItem("count",QString::number(kMaxAlbumsPerRequest));
-  request.addQueryItem("access_token",access_token_);
-  QNetworkReply* reply = network_->get(QNetworkRequest(request));
-
-  NewClosure(reply, SIGNAL(finished()),
-             this, SLOT(GetAlbumsFinished(QString,QStandardItem*,QNetworkReply*)),
-             user_id, root, reply);
-}
-
-void VkontakteService::GetAlbumsFinished(const QString& user_id, QStandardItem *item, QNetworkReply *reply) {
-  reply->deleteLater();
-
-  if (reply->error() != QNetworkReply::NoError) {
-    qLog(Error) << reply->errorString();
-    return;
-  }
-
-  QDomDocument doc;
-  doc.setContent(reply);
-  QDomElement root = doc.documentElement();
-  if (root.tagName()=="response") {
-    QDomNodeList tracks = root.elementsByTagName("album");
-    for(int i = 0; i< tracks.size(); ++i) {
-      QDomElement info = tracks.at(i).firstChildElement();
-      QString album_id,title;
-      while (!info.isNull()) {
-        if (info.tagName() == "album_id") {
-          album_id=info.text();
-        } else if (info.tagName() == "title") {
-          title = info.text();
-        }
-        info = info.nextSiblingElement();
-      }
-      albums_.insert(album_id,title);
-    }
-
-    PopulateTracksForUserAsync(user_id,item);
-  } else if (root.tagName()=="error") {
-    QDomElement error_code = root.elementsByTagName("error_code").at(0).toElement();
-    HandleApiError(error_code.text().toInt());
-  }
-}
-
-void VkontakteService::GetFullNameAsync(const QString &user_id) {
-  QUrl request("https://api.vkontakte.ru/method/getProfiles.xml");
-  request.addQueryItem("uids",user_id);
-  request.addQueryItem("fields","first_name,last_name");
-  request.addQueryItem("access_token",access_token_);
-  QNetworkReply* reply = network_->get(QNetworkRequest(request));
-
-  NewClosure(reply, SIGNAL(finished()),
-             this, SLOT(GetFullNameFinished(QString,QNetworkReply*)),
-             user_id, reply);
-}
-
-void VkontakteService::GetFullNameFinished(const QString &user_id, QNetworkReply *reply) {
-  reply->deleteLater();
-  if (reply->error() != QNetworkReply::NoError) {
-    qLog(Error) << reply->errorString();
-    return;
-  }
-
-  QDomDocument doc;
-  doc.setContent(reply);
-  QDomElement root = doc.documentElement();
-  if (root.tagName()=="response") {
-    QDomElement user = root.elementsByTagName("user").at(0).toElement().firstChildElement();
-    QString first_name,last_name;
-    while (!user.isNull()) {
-      if (user.tagName() == "first_name") {
-        first_name = user.text();
-      } else if (user.tagName() == "last_name") {
-          last_name = user.text();
-      }
-      user = user.nextSiblingElement();
-    }
-    if (first_name.isEmpty() || last_name.isEmpty())
-      emit FullNameReceived(user_id,first_name+last_name);
-    else emit FullNameReceived(user_id,first_name+" "+last_name);
-  } else if (root.tagName()=="error") {
-    QDomElement error_code = root.elementsByTagName("error_code").at(0).toElement();
-    HandleApiError(error_code.text().toInt());
-  }
-}
-
-void VkontakteService::HandleApiError(int error) {
-  switch (error) {
-  case 4:
-  case 5:
-    Relogin();
-    break;
-  }
-}
 
 void VkontakteService::Homepage() {
   QDesktopServices::openUrl(QUrl(kHomepage));
@@ -403,68 +304,56 @@ void VkontakteService::Search(const QString& text, Playlist* playlist, bool now)
     return;
   }
 
-  pending_search_ = text;
-  pending_search_playlist_ = playlist;
+  BgSearchWorker* worker;
+  if (!search_workers_.contains(playlist)) {
+    worker = new BgSearchWorker(this);
+    search_workers_.insert(playlist,worker);
+    connect(playlist,SIGNAL(destroyed(QObject*)),SLOT(PlaylistDestroyed(QObject*)));
 
-  if (now) {
-    search_delay_->stop();
-    DoSearch();
+    worker->Start(true);
+    VkontakteSearchWorker* w = worker->Worker().get();
+
+    w->SetAccessToken(access_token_);
+    w->SetNetwork(network_);
+
+    connect(w,SIGNAL(AuthError()),SLOT(Relogin()));
+    connect(w,SIGNAL(Error(QString)),worker,SLOT(quit()));
+    connect(w,SIGNAL(Error(QString)),SLOT(Log(QString)));
+    connect(w,SIGNAL(SearchResultsGot(SongList)),SLOT(SearchResultsGot(SongList)));
   } else {
-    search_delay_->start();
+    worker = search_workers_[playlist];
+  }
+
+  worker->Worker()->Search(text,now);
+}
+
+void VkontakteService::PlaylistDestroyed(QObject* object) {
+  Playlist* playlist = static_cast<Playlist*>(object);
+//use static cast instead of qobject_cast because object is not Playlist anymore
+  if (search_workers_.contains(playlist)) {
+    search_workers_[playlist]->quit();
+    search_workers_.remove(playlist);
   }
 }
 
-void VkontakteService::DoSearch() {
-  if (!pending_search_.isEmpty()) {
-    SearchAsync(pending_search_);
+void VkontakteService::SearchWorkerFinished() {
+  BgSearchWorker* worker = static_cast<BgSearchWorker*>(sender());
+  if (search_workers_.values().contains(worker)) {
+    search_workers_.remove(search_workers_.key(worker));
   }
 }
 
-void VkontakteService::SearchAsync(const QString &text, int offset) {
-  QUrl request("https://api.vkontakte.ru/method/audio.search.xml");
-  request.addQueryItem("q",text);
-  request.addQueryItem("sort","2");
-  request.addQueryItem("count","50");
-  request.addQueryItem("auto_complete","1");
-  request.addQueryItem("offset",QString::number(offset));
-  request.addQueryItem("access_token",access_token_);
-
-  QNetworkReply* reply = network_->get(QNetworkRequest(request));
-
-  NewClosure(reply, SIGNAL(finished()),
-             this, SLOT(SearchFinished(QNetworkReply*)),
-             reply);
-}
-
-void VkontakteService::SearchFinished(QNetworkReply *reply) {
-  reply->deleteLater();
-  if (reply->error() != QNetworkReply::NoError) {
-    qLog(Error) << reply->errorString();
-    return;
-  }
-
-  QByteArray arr = reply->readAll();
-  //sometimes it receives whitespaces in the beginning of the answer and QDomDocument reports an error
-  //so I use trimmed()
-  QDomDocument doc;
-  doc.setContent(arr.trimmed(),false);
-  QDomElement root = doc.documentElement();
-  if (root.tagName()=="response") {
-    QDomNodeList tracks = root.elementsByTagName("audio");
-    SongList songs;
-
-    for(int i = 0; i< tracks.size(); ++i) {
-      songs << ParseSong(tracks.at(i).firstChildElement());
+void VkontakteService::SearchResultsGot(const SongList& songs) {
+  VkontakteSearchWorker* w = qobject_cast<VkontakteSearchWorker*>(sender());
+  for (QMap<Playlist*,BgSearchWorker*>::iterator it=search_workers_.begin(); it!=search_workers_.end(); ++it) {
+    if (it.value()->Worker().get() == w) {
+      Playlist* playlist = it.key();
+      playlist->Clear();
+      playlist->InsertInternetItems(this,songs);
     }
-
-    pending_search_playlist_->Clear();
-    pending_search_playlist_->InsertInternetItems(this, songs);
-  } else if (root.tagName()=="error") {
-    QDomElement error_code = root.elementsByTagName("error_code").at(0).toElement();
-    HandleApiError(error_code.text().toInt());
   }
-
 }
+
 
 void VkontakteService::ItemDoubleClicked(QStandardItem* item) {
   if (item == search_)
@@ -472,74 +361,243 @@ void VkontakteService::ItemDoubleClicked(QStandardItem* item) {
                                         VkontakteSearchPlaylistType::kName);
 }
 
-
-Song VkontakteService::ParseSong(QDomElement info) {
-  Song song;
-  while (!info.isNull()) {
-    if (info.tagName() == "artist") {
-      song.set_artist(info.text());
-    } else if (info.tagName() == "title") {
-        song.set_title(info.text());
-    } else if (info.tagName() == "url") {
-      song.set_url(QUrl(info.text()));
-    } else if (info.tagName() == "album") {
-      song.set_album(albums_[info.text()]);
-    } else if (info.tagName() == "aid") {
-      song.set_id(info.text().toInt());
-    } else if (info.tagName() == "owner_id") {
-      song.set_owner_id(info.text().toInt());
-    } else if (info.tagName() == "duration") {
-      song.set_length_nanosec(info.text().toLongLong()*1e9);
-    }
-    info = info.nextSiblingElement();
+void VkontakteService::CreateAlbum() {
+  if (context_item_!=my_tracks_) {
+    return;
   }
-  return song;
+  bool ok;
+  QString title = QInputDialog::getText(NULL,
+                                        tr("Create album"),
+                                        tr("Album's title:"),
+                                        QLineEdit::Normal,
+                                        QString(),
+                                        &ok);
+
+  if (!ok || title.isEmpty()) {
+    return;
+  }
+  VkontakteApiWorker* w = new VkontakteApiWorker(this);
+  w->SetAccessToken(access_token_);
+  w->SetNetwork(network_);
+  connect(w,SIGNAL(Error(QString)),SLOT(Log(QString)));
+  connect(w,SIGNAL(Error(QString)),w,SLOT(deleteLater()));
+  connect(w,SIGNAL(AlbumCreated(QString)),this,SLOT(ReloadItems()));
+  connect(w,SIGNAL(AlbumCreated(QString)),w,SLOT(deleteLater()));
+  w->CreateAlbumAsync(title);
+}
+
+void VkontakteService::RenameAlbum() {
+  if (context_item_->data(Role_AlbumID).isValid()) {
+    QString album_id = context_item_->data(Role_AlbumID).toString();
+    bool ok;
+    QString title = QInputDialog::getText(NULL,
+                                          tr("Rename album"),
+                                          tr("New title:"),
+                                          QLineEdit::Normal,
+                                          context_item_->text(),
+                                          &ok);
+    if (!ok || title.isEmpty()) {
+      return;
+    }
+    VkontakteApiWorker* w = new VkontakteApiWorker(this);
+    w->SetAccessToken(access_token_);
+    w->SetNetwork(network_);
+    connect(w,SIGNAL(Error(QString)),SLOT(Log(QString)));
+    connect(w,SIGNAL(Error(QString)),w,SLOT(deleteLater()));
+    connect(w,SIGNAL(AlbumNameEdited()),this,SLOT(ReloadItems()));
+    connect(w,SIGNAL(AlbumNameEdited()),w,SLOT(deleteLater()));
+    w->EditAlbumNameAsync(album_id,title);
+  }
+}
+
+void VkontakteService::DeleteAlbum() {
+  if (context_item_->data(Role_AlbumID).isValid()) {
+    QString album_id = context_item_->data(Role_AlbumID).toString();
+    if (QMessageBox::question(NULL, tr("Delete album"),
+                              tr("This action will delete this album (all songs will remain), are you sure you want to continue?"),
+                              QMessageBox::Yes, QMessageBox::Cancel) != QMessageBox::Yes)
+      return;
+    VkontakteApiWorker* w = new VkontakteApiWorker(this);
+    w->SetAccessToken(access_token_);
+    w->SetNetwork(network_);
+    connect(w,SIGNAL(Error(QString)),SLOT(Log(QString)));
+    connect(w,SIGNAL(Error(QString)),w,SLOT(deleteLater()));
+    connect(w,SIGNAL(AlbumDeleted()),this,SLOT(ReloadItems()));
+    connect(w,SIGNAL(AlbumDeleted()),w,SLOT(deleteLater()));
+    w->DeleteAlbumAsync(album_id);
+  }
 }
 
 void VkontakteService::AddToMyTracks() {
-  QUrl request("https://api.vkontakte.ru/method/audio.add.xml");
-  request.addQueryItem("aid",QString::number(context_song_.id()));
-  request.addQueryItem("oid",QString::number(context_song_.owner_id()));
-  request.addQueryItem("access_token",access_token_);
+  if (urls_to_add_.isEmpty())
+    return;
 
-  QNetworkReply* reply = network_->get(QNetworkRequest(request));
+  BgWorker* worker = new BgWorker(this);
+  worker->Start(true);
+  VkontakteWorker* w = worker->Worker().get();
+  w->SetAccessToken(access_token_);
+  w->SetNetwork(network_);
+  connect(w,SIGNAL(AuthError()),SLOT(Relogin()));
+  connect(w,SIGNAL(Error(QString)),worker,SLOT(quit()));
+  connect(w,SIGNAL(Error(QString)),SLOT(Log(QString)));
+  connect(w,SIGNAL(MultiAddedToMyTracks()),this,SLOT(RepopulateMyTracks()));
+  connect(w,SIGNAL(MultiAddedToMyTracks()),worker,SLOT(quit()));
 
-  NewClosure(reply, SIGNAL(finished()),
-             this, SLOT(MyTracksChanged(QNetworkReply*)),
-             reply);
+  w->MultiAddToMyTracks(urls_to_add_,user_id_);
 }
 
 
 void VkontakteService::RemoveFromMyTracks() {
-  QUrl request("https://api.vkontakte.ru/method/audio.delete.xml");
-  request.addQueryItem("aid",QString::number(context_song_.id()));
-  request.addQueryItem("oid",QString::number(context_song_.owner_id()));
-  request.addQueryItem("access_token",access_token_);
-
-  QNetworkReply* reply = network_->get(QNetworkRequest(request));
-
-  NewClosure(reply, SIGNAL(finished()),
-             this, SLOT(MyTracksChanged(QNetworkReply*)),
-             reply);
-}
-
-void VkontakteService::MyTracksChanged(QNetworkReply *reply) {
-  reply->deleteLater();
-  if (reply->error() != QNetworkReply::NoError) {
-    qLog(Error) << reply->errorString();
+  if (urls_to_remove_.isEmpty())
     return;
-  }
 
-  QByteArray arr = reply->readAll();
-  QDomDocument doc;
-  doc.setContent(arr.trimmed(),false);
-  QDomElement root = doc.documentElement();
-  if (root.tagName()=="response") {
-    if (!my_tracks_->data(InternetModel::Role_CanLazyLoad).toBool())
-      LazyPopulate(my_tracks_);
-  } else if (root.tagName()=="error") {
-    QDomElement error_code = root.elementsByTagName("error_code").at(0).toElement();
-    HandleApiError(error_code.text().toInt());
+  BgWorker* worker = new BgWorker(this);
+  worker->Start(true);
+  VkontakteWorker* w = worker->Worker().get();
+  w->SetAccessToken(access_token_);
+  w->SetNetwork(network_);
+  connect(w,SIGNAL(AuthError()),SLOT(Relogin()));
+  connect(w,SIGNAL(Error(QString)),worker,SLOT(quit()));
+  connect(w,SIGNAL(Error(QString)),SLOT(Log(QString)));
+
+  connect(w,SIGNAL(MultiRemovedFromMyTracks()),this,SLOT(RepopulateMyTracks()));
+  connect(w,SIGNAL(MultiRemovedFromMyTracks()),worker,SLOT(quit()));
+
+  w->MultiRemoveFromMyTracks(urls_to_remove_,user_id_);
+}
+
+
+QStandardItem* VkontakteService::FindChild(QStandardItem *parent, const QString &text) {
+  for (int i = 0; i< parent->rowCount(); ++i) {
+    QStandardItem* child = parent->child(i);
+    if (child->text()==text)
+      return child;
+  }
+  return 0;
+}
+
+void VkontakteService::DropMimeData(const QMimeData *data, const QModelIndex &index) {
+  QList<QUrl> songs = data->urls();
+  QString album_id = index.data(Role_AlbumID).toString(); //if empty - delete from album
+
+  if (songs.isEmpty())
+    return;
+
+  BgWorker* worker = new BgWorker(this);
+  worker->Start(true);
+  VkontakteWorker* w = worker->Worker().get();
+  w->SetAccessToken(access_token_);
+  w->SetNetwork(network_);
+  connect(w,SIGNAL(AuthError()),SLOT(Relogin()));
+  connect(w,SIGNAL(Error(QString)),worker,SLOT(quit()));
+    connect(w,SIGNAL(Error(QString)),SLOT(Log(QString)));
+
+  connect(w,SIGNAL(MultiMovedToAlbum()),this,SLOT(RepopulateMyTracks()));
+  connect(w,SIGNAL(MultiMovedToAlbum()),worker,SLOT(quit()));
+
+  w->MultiMoveToAlbum(songs,user_id_,album_id);
+}
+
+void VkontakteService::InsertFriendItems(const QList<QStringList> &list_of_user_full_name) {
+  for (QList<QStringList>::const_iterator it = list_of_user_full_name.begin();
+       it!=list_of_user_full_name.end(); ++it) {
+    if (it->size()<2) continue;
+    QString user_id = it->at(0);
+    QString full_name = it->at(1);
+
+    QStandardItem* user = new QStandardItem(QIcon(":last.fm/icon_user.png"),full_name);
+    user->setData(user_id,Role_UserID);
+    user->setData(true, InternetModel::Role_CanLazyLoad);
+    user->setData(InternetModel::Type_Service,InternetModel::Role_Type);
+    friends_->appendRow(user);
   }
 }
 
+void VkontakteService::InsertAlbumItems(const QList<QStringList>& list_of_owner_album_title) {
+  QStandardItem* parent = NULL;
+  QString old_owner;
+
+  for (QList<QStringList>::const_iterator it = list_of_owner_album_title.begin();
+       it!=list_of_owner_album_title.end(); ++it) {
+
+    if (it->size() < 3) continue;
+    QString owner_id = it->at(0), album_id = it->at(1), title = it->at(2);
+
+    if (old_owner!=owner_id) {
+      if (owner_id == user_id_)
+        parent = my_tracks_;
+      else {
+        for (int i = 0; i<friends_->rowCount(); ++i) {
+          QStandardItem* child = friends_->child(i);
+          if (child->data(Role_UserID).toString() == owner_id)
+            parent = child;
+        }
+      }
+    }
+    if (!parent) continue;
+
+    QStandardItem* album = new QStandardItem(IconLoader::Load("x-clementine-album"),title);
+    album->setData(album_id,VkontakteService::Role_AlbumID);
+    album->setData(InternetModel::Type_UserPlaylist,InternetModel::Role_Type);
+    album->setData(InternetModel::PlayBehaviour_UseSongLoader,InternetModel::Role_PlayBehaviour);
+    album->setData(true, InternetModel::Role_CanBeModified);
+    parent->appendRow(album);
+
+    old_owner = owner_id;
+  }
+}
+
+void VkontakteService::InsertTrackItems(const SongList& songs) {
+  QStandardItem *parent = NULL, *user = NULL, *album = NULL;
+  QString old_owner, old_album;
+  QRegExp rx(kCommentInfoRegexp);
+
+  for (SongList::const_iterator it = songs.begin(); it!=songs.end(); ++it) {
+    Song song = *it;
+    if (!song.url().hasFragment() || rx.indexIn(song.url().fragment()) ==-1 )
+      continue;
+
+    QString owner_id = rx.cap(2), album_id = rx.cap(3);
+
+    if (old_owner!=owner_id) {
+      if (owner_id == user_id_)
+        user = my_tracks_;
+      else {
+        for (int i = 0; i<friends_->rowCount(); ++i) {
+          QStandardItem* child = friends_->child(i);
+          if (child->data(Role_UserID).toString() == owner_id)
+            user = child;
+        }
+      }
+      if (!user) continue;
+    }
+    if (album_id.isEmpty()) {
+      parent = user;
+    } else {
+      if (old_album!=album_id) {
+        for (int i = 0; i<user->rowCount(); ++i) {
+          QStandardItem* child = user->child(i);
+          if (child->data(Role_AlbumID).toString() == album_id)
+            album = child;
+        }
+        if (!album) continue;
+        song.set_album(album->text());
+      }
+      parent = album;
+    }
+
+    QStandardItem* song_item = new QStandardItem(song.PrettyTitleWithArtist());
+    song_item->setData(InternetModel::PlayBehaviour_SingleItem, InternetModel::Role_PlayBehaviour);
+    song_item->setData(song.url(),InternetModel::Role_Url);
+    song_item->setData(VkontakteService::Type_Song,InternetModel::Role_Type);
+    song_item->setData(QVariant::fromValue(song), InternetModel::Role_SongMetadata);
+    parent->appendRow(song_item);
+  }
+}
+
+void VkontakteService::RepopulateMyTracks() {
+  LazyPopulate(my_tracks_);
+}
+ void VkontakteService::Log(QString error) {
+   qLog(Warning) << error;
+ }

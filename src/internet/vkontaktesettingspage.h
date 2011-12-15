@@ -56,7 +56,7 @@ private slots:
   void LoginFinished(VkontakteAuthResult result);
   void CaptchaRequested(const QPixmap& pix);
   void CaptchaEntered();
-  void FullNameReceived(const QString& user_id, const QString& full_name);
+  void FullNameReceived(const QString& full_name);
 private:
   void UpdateLoginState();
 

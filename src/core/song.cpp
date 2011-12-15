@@ -160,7 +160,6 @@ QMutex Song::taglib_mutex_;
 Song::Private::Private()
   : valid_(false),
     id_(-1),
-    owner_id_(-1),
     track_(-1),
     disc_(-1),
     bpm_(-1),
