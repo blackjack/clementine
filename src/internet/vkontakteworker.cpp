@@ -32,56 +32,74 @@ void VkontakteSearchWorker::DoSearch() {
   }
 }
 
+VkontakteWorker::VkontakteWorker(QObject *parent)
+  :VkontakteApiWorker(parent)
+{
+  timer_ = new QTimer(this);
+}
+
 void VkontakteWorker::MultiAddToMyTracks(const QList<QUrl> &urls, const QString &user_id) {
-  left_to_add_=0;
   QRegExp rx(VkontakteService::kCommentInfoRegexp);
   foreach (QUrl url, urls) {
-    if (url.hasFragment() && rx.indexIn(url.fragment()) >-1) {
-      QString song_id = rx.cap(1);
-      QString owner_id = rx.cap(2);
-      if (owner_id!=user_id) {
-        ++left_to_add_;
-        AddToMyTracksAsync(song_id,owner_id);
-      }
+    if (url.hasFragment() && rx.indexIn(url.fragment()) >-1 && rx.cap(2)!=user_id) {
+      songs_to_add_.append(url);
     }
   }
-  if (left_to_add_ == 0) {
+  if (songs_to_add_.isEmpty()) {
     emit MultiAddedToMyTracks();
     return;
   }
-  connect(this,SIGNAL(AddedToMyTracks(QString)),SLOT(DecreaseLeftToAddCounter()));
+  else {
+    ProcessAddQueue();
+  }
 }
 
-void VkontakteWorker::DecreaseLeftToAddCounter() {
-  --left_to_add_;
-  if (left_to_add_==0)
-    emit MultiAddedToMyTracks();
+void VkontakteWorker::ProcessAddQueue() {
+  qDebug() << QDateTime::currentDateTime();
+  QRegExp rx(VkontakteService::kCommentInfoRegexp);
+  QUrl url = songs_to_add_.dequeue();
+  rx.indexIn(url.toString());
+  AddToMyTracksAsync(rx.cap(1),rx.cap(2));
+  if (songs_to_add_.isEmpty()) {
+    connect(this,SIGNAL(AddedToMyTracks(QString)),SIGNAL(MultiAddedToMyTracks()));
+  } else {
+    timer_->singleShot(1500,this,SLOT(ProcessAddQueue()));
+  }
 }
 
 void VkontakteWorker::MultiRemoveFromMyTracks(const QList<QUrl> &urls, const QString &user_id) {
-  left_to_remove_=0;
   QRegExp rx(VkontakteService::kCommentInfoRegexp);
   foreach (QUrl url, urls) {
-    if (url.hasFragment() && rx.indexIn(url.fragment()) >-1) {
-      QString song_id = rx.cap(1);
-      QString owner_id = rx.cap(2);
-      if (owner_id==user_id) {
-        ++left_to_remove_;
-        RemoveFromMyTracksAsync(song_id,owner_id);
-      }
+    if (url.hasFragment() && rx.indexIn(url.fragment()) >-1 && rx.cap(2)==user_id) {
+      songs_to_remove_.append(url);
     }
   }
-  if (left_to_remove_ == 0) {
+  if (songs_to_remove_.isEmpty()) {
     emit MultiRemovedFromMyTracks();
     return;
   }
-  connect(this,SIGNAL(RemovedFromMyTracks()),SLOT(DecreaseLeftToRemoveCounter()));
+  else {
+    QUrl url = songs_to_remove_.dequeue();
+    rx.indexIn(url.toString());
+    RemoveFromMyTracksAsync(rx.cap(1),rx.cap(2));
+    if (songs_to_remove_.isEmpty()) {
+      connect(this,SIGNAL(RemovedFromMyTracks()),SIGNAL(MultiRemovedFromMyTracks()));
+    } else {
+      timer_->singleShot(100,this,SLOT(ProcessRemoveQueue()));
+    }
+  }
 }
 
-void VkontakteWorker::DecreaseLeftToRemoveCounter() {
-  --left_to_remove_;
-  if (left_to_remove_==0)
-    emit MultiRemovedFromMyTracks();
+void VkontakteWorker::ProcessRemoveQueue() {
+  QRegExp rx(VkontakteService::kCommentInfoRegexp);
+  QUrl url = songs_to_remove_.dequeue();
+  rx.indexIn(url.toString());
+  RemoveFromMyTracksAsync(rx.cap(1),rx.cap(2));
+  if (songs_to_remove_.isEmpty()) {
+    connect(this,SIGNAL(RemovedFromMyTracks()),SIGNAL(MultiRemovedFromMyTracks()));
+  } else {
+    timer_->singleShot(100,this,SLOT(ProcessRemoveQueue()));
+  }
 }
 
 
@@ -104,9 +122,9 @@ void VkontakteWorker::MultiMoveToAlbum(const QList<QUrl>& songs, const QString& 
     }
   }
   if (!songs_to_add.isEmpty()) {
+    left_to_append_ = songs_to_add.size();
     MultiAddToMyTracks(songs_to_add,user_id);
     connect(this,SIGNAL(AddedToMyTracks(QString)),SLOT(AppendAddedSongToMove(QString)));
-    connect(this,SIGNAL(MultiAddedToMyTracks()),SLOT(MoveAddedSongsToAlbum()));
   }
   else {
     MoveAddedSongsToAlbum();
@@ -115,7 +133,11 @@ void VkontakteWorker::MultiMoveToAlbum(const QList<QUrl>& songs, const QString& 
 }
 
 void VkontakteWorker::AppendAddedSongToMove(const QString &song_id) {
+  --left_to_append_;
   songs_ids_to_move_+=song_id+",";
+  if (left_to_append_==0) {
+    MoveAddedSongsToAlbum();
+  }
 }
 
 void VkontakteWorker::MoveAddedSongsToAlbum() {

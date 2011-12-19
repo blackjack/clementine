@@ -2,6 +2,8 @@
 #define VKONTAKTEWORKER_H
 
 #include <QObject>
+#include <QQueue>
+#include <QUrl>
 #include <QDomElement>
 #include "core/song.h"
 
@@ -23,6 +25,7 @@ public:
   void SetNetwork(ThrottledNetworkManager* network) { network_ = network; }
 
   void Stop() {}
+
 
 signals:
   void TracksGot(const SongList& songs);
@@ -82,7 +85,7 @@ class VkontakteWorker: public VkontakteApiWorker {
     Q_OBJECT
 
 public:
-  VkontakteWorker(QObject* parent = 0): VkontakteApiWorker(parent) {}
+  VkontakteWorker(QObject* parent = 0);
 
 public slots:
   void MultiAddToMyTracks(const QList<QUrl>& urls, const QString& user_id);
@@ -95,16 +98,18 @@ signals:
   void MultiMovedToAlbum();
 
 private slots:
-  void DecreaseLeftToAddCounter();
-  void DecreaseLeftToRemoveCounter();
+  void ProcessAddQueue();
+  void ProcessRemoveQueue();
 
   void AppendAddedSongToMove(const QString& song_id);
   void MoveAddedSongsToAlbum();
 
 private:
-  QString user_id_;
-  int left_to_add_;
-  int left_to_remove_;
+  QTimer* timer_;
+  QQueue<QUrl> songs_to_add_;
+  QQueue<QUrl> songs_to_remove_;
+
+  int left_to_append_;
   QString songs_ids_to_move_;
   QString target_album_id_;
 };

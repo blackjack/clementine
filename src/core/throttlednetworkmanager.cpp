@@ -6,7 +6,7 @@
 #include <QMutexLocker>
 
 NetworkReply::NetworkReply(QObject *parent)
-    : QObject(parent),data_(0)
+  : QObject(parent),data_(0)
 {
 }
 
@@ -17,12 +17,12 @@ void NetworkReply::replyFinished() {
   emit finished(reply);
 }
 
-ThrottledNetworkManager::ThrottledNetworkManager(int max_requests_per_sedcond, QObject *parent) :
-    QNetworkAccessManager(parent)
+ThrottledNetworkManager::ThrottledNetworkManager(int max_requests_per_second, QObject *parent) :
+  QNetworkAccessManager(parent)
 {
   mutex_ = new QMutex();
   timer_ = new QTimer(this);
-  timer_->setInterval(1000/max_requests_per_sedcond);
+  timer_->setInterval(1000/max_requests_per_second);
   connect(timer_,SIGNAL(timeout()),SLOT(ProcessQueue()));
   connect(this,SIGNAL(TimeToProcessQueue()),SLOT(ProcessQueue()));
 }

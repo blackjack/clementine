@@ -38,7 +38,7 @@ class ThrottledNetworkManager : public QNetworkAccessManager
     Q_OBJECT
 
 public:
-    explicit ThrottledNetworkManager(int max_requests_per_sedcond, QObject *parent = 0);
+    explicit ThrottledNetworkManager(int max_requests_per_second, QObject *parent = 0);
     NetworkReply* throttledGet(const QNetworkRequest& request);
 
 private slots:

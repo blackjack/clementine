@@ -309,6 +309,7 @@ void VkontakteService::Search(const QString& text, Playlist* playlist, bool now)
     worker = new BgSearchWorker(this);
     search_workers_.insert(playlist,worker);
     connect(playlist,SIGNAL(destroyed(QObject*)),SLOT(PlaylistDestroyed(QObject*)));
+    connect(worker,SIGNAL(finished()),SLOT(SearchWorkerFinished()));
 
     worker->Start(true);
     VkontakteSearchWorker* w = worker->Worker().get();
@@ -338,9 +339,7 @@ void VkontakteService::PlaylistDestroyed(QObject* object) {
 
 void VkontakteService::SearchWorkerFinished() {
   BgSearchWorker* worker = static_cast<BgSearchWorker*>(sender());
-  if (search_workers_.values().contains(worker)) {
-    search_workers_.remove(search_workers_.key(worker));
-  }
+  search_workers_.remove(search_workers_.key(worker));
 }
 
 void VkontakteService::SearchResultsGot(const SongList& songs) {
@@ -490,7 +489,7 @@ void VkontakteService::DropMimeData(const QMimeData *data, const QModelIndex &in
   w->SetNetwork(network_);
   connect(w,SIGNAL(AuthError()),SLOT(Relogin()));
   connect(w,SIGNAL(Error(QString)),worker,SLOT(quit()));
-    connect(w,SIGNAL(Error(QString)),SLOT(Log(QString)));
+  connect(w,SIGNAL(Error(QString)),SLOT(Log(QString)));
 
   connect(w,SIGNAL(MultiMovedToAlbum()),this,SLOT(RepopulateMyTracks()));
   connect(w,SIGNAL(MultiMovedToAlbum()),worker,SLOT(quit()));
