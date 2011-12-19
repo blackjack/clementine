@@ -93,7 +93,8 @@ void SavedRadio::SaveStreams() {
 }
 
 void SavedRadio::ShowContextMenu(const QModelIndex& index,
-                                 const QPoint& global_pos) {
+                                 const QPoint& global_pos,
+                                 const QModelIndexList& selection) {
   if (!context_menu_) {
     context_menu_ = new QMenu;
     context_menu_->addActions(GetPlaylistActions());

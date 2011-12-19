@@ -427,7 +427,8 @@ void JamendoService::EnsureMenuCreated() {
   }
 }
 
-void JamendoService::ShowContextMenu(const QModelIndex& index, const QPoint& global_pos) {
+void JamendoService::ShowContextMenu(const QModelIndex& index, const QPoint& global_pos,
+                                     const QModelIndexList& selection) {
   EnsureMenuCreated();
 
   if (index.model() == library_sort_model_) {

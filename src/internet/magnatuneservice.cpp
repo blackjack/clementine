@@ -285,7 +285,8 @@ void MagnatuneService::EnsureMenuCreated() {
   context_menu_->addMenu(library_filter_->menu());
 }
 
-void MagnatuneService::ShowContextMenu(const QModelIndex& index, const QPoint& global_pos) {
+void MagnatuneService::ShowContextMenu(const QModelIndex& index, const QPoint& global_pos,
+                                       const QModelIndexList& selection) {
   EnsureMenuCreated();
 
   if (index.model() == library_sort_model_)

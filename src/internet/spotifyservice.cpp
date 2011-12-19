@@ -583,7 +583,8 @@ SpotifyServer* SpotifyService::server() const {
   return server_;
 }
 
-void SpotifyService::ShowContextMenu(const QModelIndex& index, const QPoint& global_pos) {
+void SpotifyService::ShowContextMenu(const QModelIndex& index, const QPoint& global_pos,
+                                     const QModelIndexList& selection) {
   EnsureMenuCreated();
   QStandardItem* item = model()->itemFromIndex(index);
   if (item) {

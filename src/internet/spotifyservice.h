@@ -52,7 +52,7 @@ public:
 
   QStandardItem* CreateRootItem();
   void LazyPopulate(QStandardItem* parent);
-  void ShowContextMenu(const QModelIndex& index, const QPoint& global_pos);
+  void ShowContextMenu(const QModelIndex& index, const QPoint& global_pos, const QModelIndexList& selection);
   void ItemDoubleClicked(QStandardItem* item);
   PlaylistItem::Options playlistitem_options() const;
 

@@ -144,7 +144,7 @@ public:
   int rowCount(const QModelIndex& parent) const;
 
   void ShowContextMenu(const QModelIndex& merged_model_index,
-                       const QPoint& global_pos);
+                       const QPoint& global_pos, const QModelIndexList& selection);
   void ReloadSettings();
 
   BackgroundThread<Database>* db_thread() const { return db_thread_; }

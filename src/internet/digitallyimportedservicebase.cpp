@@ -170,7 +170,8 @@ void DigitallyImportedServiceBase::ReloadSettings() {
 }
 
 void DigitallyImportedServiceBase::ShowContextMenu(
-    const QModelIndex& index, const QPoint& global_pos) {
+    const QModelIndex& index, const QPoint& global_pos,
+    const QModelIndexList& selection) {
   if (!context_menu_) {
     context_menu_.reset(new QMenu);
     context_menu_->addActions(GetPlaylistActions());

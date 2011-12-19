@@ -272,7 +272,8 @@ QWidget* IcecastService::HeaderWidget() const {
 }
 
 void IcecastService::ShowContextMenu(const QModelIndex& index,
-                                     const QPoint& global_pos) {
+                                     const QPoint& global_pos,
+                                     const QModelIndexList& selection) {
   EnsureMenuCreated();
 
   if (index.model() == model_)

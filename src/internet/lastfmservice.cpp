@@ -565,7 +565,8 @@ void LastFMService::Ban() {
   model()->player()->Next();
 }
 
-void LastFMService::ShowContextMenu(const QModelIndex& index, const QPoint &global_pos) {
+void LastFMService::ShowContextMenu(const QModelIndex& index, const QPoint &global_pos,
+                                    const QModelIndexList& selection) {
   context_item_ = model()->itemFromIndex(index);
 
   switch (index.parent().data(InternetModel::Role_Type).toInt()) {

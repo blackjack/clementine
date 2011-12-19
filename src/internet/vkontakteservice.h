@@ -70,7 +70,7 @@ public:
 
   QStandardItem* CreateRootItem();
   void LazyPopulate(QStandardItem* item);
-  void ShowContextMenu(const QModelIndex& index, const QPoint& global_pos);
+  void ShowContextMenu(const QModelIndex& index, const QPoint& global_pos, const QModelIndexList& selection);
   void ItemDoubleClicked(QStandardItem* item);
   QList<QAction*> playlistitem_actions(const Song& song);
   void DropMimeData(const QMimeData* data, const QModelIndex& index);

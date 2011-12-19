@@ -55,7 +55,7 @@ class SavedRadio : public InternetService {
   QStandardItem* CreateRootItem();
   void LazyPopulate(QStandardItem* item);
 
-  void ShowContextMenu(const QModelIndex& index, const QPoint& global_pos);
+  void ShowContextMenu(const QModelIndex& index, const QPoint& global_pos, const QModelIndexList& selection);
 
   void Add(const QUrl& url, const QString& name = QString());
 

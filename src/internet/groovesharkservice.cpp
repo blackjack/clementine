@@ -438,7 +438,8 @@ void GroovesharkService::ResetSessionId() {
   s.setValue("sessionid", session_id_);
 }
 
-void GroovesharkService::ShowContextMenu(const QModelIndex& index, const QPoint& global_pos) {
+void GroovesharkService::ShowContextMenu(const QModelIndex& index, const QPoint& global_pos,
+                                         const QModelIndexList& selection) {
   EnsureMenuCreated();
 
   // Check if we should display actions

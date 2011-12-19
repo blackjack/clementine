@@ -77,7 +77,8 @@ void SomaFMService::LazyPopulate(QStandardItem* item) {
   }
 }
 
-void SomaFMService::ShowContextMenu(const QModelIndex& index, const QPoint& global_pos) {
+void SomaFMService::ShowContextMenu(const QModelIndex& index, const QPoint& global_pos,
+                                    const QModelIndexList& selection) {
   if (!context_menu_) {
     context_menu_ = new QMenu;
     context_menu_->addActions(GetPlaylistActions());

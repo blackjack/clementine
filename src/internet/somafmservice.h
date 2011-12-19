@@ -56,7 +56,7 @@ public:
 
   QStandardItem* CreateRootItem();
   void LazyPopulate(QStandardItem* item);
-  void ShowContextMenu(const QModelIndex& index, const QPoint& global_pos);
+  void ShowContextMenu(const QModelIndex& index, const QPoint& global_pos, const QModelIndexList& selection);
 
   PlaylistItem::Options playlistitem_options() const;
   QNetworkAccessManager* network() const { return network_; }

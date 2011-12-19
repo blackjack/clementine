@@ -68,7 +68,7 @@ class GroovesharkService : public InternetService {
   smart_playlists::GeneratorPtr CreateGenerator(QStandardItem* item);
   void DropMimeData(const QMimeData* data, const QModelIndex& index);
   QList<QAction*> playlistitem_actions(const Song& song);
-  void ShowContextMenu(const QModelIndex& index, const QPoint& global_pos);
+  void ShowContextMenu(const QModelIndex& index, const QPoint& global_pos, const QModelIndexList& selection);
 
   void Search(const QString& text, Playlist* playlist, bool now = false);
   // User should be logged in to be able to generate streaming urls

@@ -154,7 +154,8 @@ QModelIndex VkontakteService::GetCurrentIndex() {
   return context_item_->index();
 }
 
-void VkontakteService::ShowContextMenu(const QModelIndex& index, const QPoint& global_pos) {
+void VkontakteService::ShowContextMenu(const QModelIndex& index, const QPoint& global_pos,
+                                       const QModelIndexList& selection) {
   if (!context_menu_) {
     context_menu_ = new QMenu;
     context_menu_->addActions(GetPlaylistActions());
@@ -184,23 +185,20 @@ void VkontakteService::ShowContextMenu(const QModelIndex& index, const QPoint& g
 
   QRegExp rx(kCommentInfoRegexp);
 
-  InternetView* view = qobject_cast<InternetView*>(qApp->widgetAt(global_pos)->parentWidget());
-  if (view) {
-    urls_to_add_.clear();
-    urls_to_remove_.clear();
+  urls_to_add_.clear();
+  urls_to_remove_.clear();
 
-    foreach (QModelIndex i, view->selectionModel()->selectedIndexes()) {
-      QUrl url = i.data(InternetModel::Role_Url).toUrl();
-      if (!url.isValid())
-        continue;
-      if (url.hasFragment() &&
-          rx.indexIn(url.fragment()) >-1 ) {
-        QString owner_id = rx.cap(2);
-        if (owner_id==user_id_)
-          urls_to_remove_ << url;
-        else
-          urls_to_add_ << url;
-      }
+  foreach (QModelIndex i, selection) {
+    QUrl url = i.data(InternetModel::Role_Url).toUrl();
+    if (!url.isValid())
+      continue;
+    if (url.hasFragment() &&
+        rx.indexIn(url.fragment()) >-1 ) {
+      QString owner_id = rx.cap(2);
+      if (owner_id==user_id_)
+        urls_to_remove_ << url;
+      else
+        urls_to_add_ << url;
     }
   }
 
