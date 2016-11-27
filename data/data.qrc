@@ -332,6 +332,7 @@
         <file>providers/22x22/dropbox.png</file>
         <file>providers/22x22/echonest.png</file>
         <file>providers/22x22/googledrive.png</file>
+        <file>providers/22x22/googlemusic.png</file>
         <file>providers/22x22/itunes.png</file>
         <file>providers/22x22/jamendo.png</file>
         <file>providers/22x22/jazzradio.png</file>
@@ -365,6 +366,7 @@
         <file>providers/32x32/dropbox.png</file>
         <file>providers/32x32/echonest.png</file>
         <file>providers/32x32/googledrive.png</file>
+        <file>providers/32x32/googlemusic.png</file>
         <file>providers/32x32/itunes.png</file>
         <file>providers/32x32/jamendo.png</file>
         <file>providers/32x32/jazzradio.png</file>
@@ -398,6 +400,7 @@
         <file>providers/48x48/dropbox.png</file>
         <file>providers/48x48/echonest.png</file>
         <file>providers/48x48/googledrive.png</file>
+        <file>providers/48x48/googlemusic.png</file>
         <file>providers/48x48/itunes.png</file>
         <file>providers/48x48/jamendo.png</file>
         <file>providers/48x48/jazzradio.png</file>
@@ -471,6 +474,7 @@
         <file>schema/schema-4.sql</file>
         <file>schema/schema-5.sql</file>
         <file>schema/schema-50.sql</file>
+        <file>schema/schema-51.sql</file>
         <file>schema/schema-6.sql</file>
         <file>schema/schema-7.sql</file>
         <file>schema/schema-8.sql</file>

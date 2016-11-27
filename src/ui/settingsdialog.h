@@ -80,6 +80,7 @@ class SettingsDialog : public QDialog {
     Page_Subsonic,
     Page_Podcasts,
     Page_GoogleDrive,
+    Page_GoogleMusic,
     Page_Dropbox,
     Page_Skydrive,
     Page_Box,

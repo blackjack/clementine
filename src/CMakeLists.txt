@@ -1103,6 +1103,23 @@ optional_source(HAVE_GOOGLE_DRIVE
     internet/googledrive/googledrivesettingspage.ui
 )
 
+# Google Music support
+optional_source(HAVE_GOOGLE_MUSIC
+  SOURCES
+    globalsearch/googlemusicsearchprovider.cpp
+    internet/googlemusic/googlemusicclient.cpp
+    internet/googlemusic/googlemusicservice.cpp
+    internet/googlemusic/googlemusicsettingspage.cpp
+    internet/googlemusic/googlemusicurlhandler.cpp
+  HEADERS
+    internet/googlemusic/googlemusicclient.h
+    internet/googlemusic/googlemusicservice.h
+    internet/googlemusic/googlemusicsettingspage.h
+    internet/googlemusic/googlemusicurlhandler.h
+  UI
+    internet/googlemusic/googlemusicsettingspage.ui
+)
+
 # Dropbox support
 optional_source(HAVE_DROPBOX
   SOURCES

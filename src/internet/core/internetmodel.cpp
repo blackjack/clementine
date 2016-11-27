@@ -49,6 +49,9 @@
 #ifdef HAVE_GOOGLE_DRIVE
 #include "internet/googledrive/googledriveservice.h"
 #endif
+#ifdef HAVE_GOOGLE_MUSIC
+#include "internet/googlemusic/googlemusicservice.h"
+#endif
 #ifdef HAVE_DROPBOX
 #include "internet/dropbox/dropboxservice.h"
 #endif
@@ -106,6 +109,9 @@ InternetModel::InternetModel(Application* app, QObject* parent)
 #endif
 #ifdef HAVE_GOOGLE_DRIVE
   AddService(new GoogleDriveService(app, this));
+#endif
+#ifdef HAVE_GOOGLE_MUSIC
+  AddService(new GoogleMusicService(app, this));
 #endif
 #ifdef HAVE_SEAFILE
   AddService(new SeafileService(app, this));

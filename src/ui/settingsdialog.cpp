@@ -63,6 +63,10 @@
 #include "internet/googledrive/googledrivesettingspage.h"
 #endif
 
+#ifdef HAVE_GOOGLE_MUSIC
+#include "internet/googlemusic/googlemusicsettingspage.h"
+#endif
+
 #ifdef HAVE_DROPBOX
 #include "internet/dropbox/dropboxsettingspage.h"
 #endif
@@ -165,6 +169,10 @@ SettingsDialog::SettingsDialog(Application* app, BackgroundStreams* streams,
 
 #ifdef HAVE_GOOGLE_DRIVE
   AddPage(Page_GoogleDrive, new GoogleDriveSettingsPage(this), providers);
+#endif
+
+#ifdef HAVE_GOOGLE_MUSIC
+  AddPage(Page_GoogleMusic, new GoogleMusicSettingsPage(this), providers);
 #endif
 
 #ifdef HAVE_DROPBOX
